@@ -1788,7 +1788,12 @@ window.__ModuleLoader__.load({
         // Abandoned because the tab closed: the pane is gone, so is the spinner.
         if (result === undefined) return;
         if (unwrapResult(result).ok === false) lastErrorRef.current = 'list(root)';
-        setState((current) => applyListResult(current, ROOT_LEVEL, result));
+        // `replace` is not optional here. This one callback serves both the first
+        // load AND the re-list of a level the panel already holds (`force`), and
+        // the default is the paging *append*: without the flag a recheck or a
+        // retry concatenates a second copy of the drive onto the list, which the
+        // reader sees as the listing starting over at the bottom.
+        setState((current) => applyListResult(current, ROOT_LEVEL, result, true));
       }, [props, signal]);
 
       /** Fetch the next page of one already-open level. */
@@ -2141,7 +2146,10 @@ window.__ModuleLoader__.load({
           void settleRemoteCall(() => face().list({ driveId, fileId }, undefined, signal), signal)
             .then((result) => {
               if (result === undefined) return;
-              setState((current) => applyListResult(current, key, result));
+              // `replace`, for the same reason `loadRoot` needs it: this fills a
+              // level that is about to be shown whole, and the append default is
+              // what paging is for.
+              setState((current) => applyListResult(current, key, result, true));
             });
         }
         if (restored.query.trim() !== '') void runSearch(restored.query);
