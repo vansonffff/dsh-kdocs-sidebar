@@ -2659,7 +2659,11 @@ window.__ModuleLoader__.load({
      * @returns {any} the rendered card.
      */
     function KDocsToolView(props) {
-      const { block, toolName } = props;
+      // `t` must come from the seat, not from this module: the bound locale
+      // function lives in `apply`'s scope, so reaching for a bare `t` here is a
+      // ReferenceError — and it only fires on the error branch, which is exactly
+      // the branch nobody exercises until a `kdocs_*` call fails.
+      const { block, toolName, t } = props;
       const settled = block !== null && typeof block === 'object' && block.kind === 'tool-result' ? block : undefined;
       const argsRaw = settled?.call?.argsRaw ?? (block !== null && typeof block === 'object' ? block.argsRaw : undefined);
       const text = toolResultText(settled?.content);
