@@ -1,0 +1,11 @@
+# kdocs bundle patch — inserts the KDocs capability seam into a DSH profile.
+#
+# The row below mounts the plugin package as one loader entry. `inject` names
+# the services the plugin reads from the composition: nothing here is optional,
+# because the Provider only ever registers the `kdocs` service (a pure Service
+# Definition needs no other capability). Later layers address this row by
+# `id: dsh-kdocs-inside` — for example to override the Provider config.
+
+- insert:
+    - id: dsh-kdocs-inside
+      name: dsh-kdocs-inside

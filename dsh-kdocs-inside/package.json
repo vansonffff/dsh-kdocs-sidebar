@@ -1,0 +1,86 @@
+{
+  "name": "dsh-kdocs-inside",
+  "version": "0.2.0",
+  "description": "金山文档 (KDocs/WPS) capability seam for DeepSeek Harness — ctx.kdocs, a kdocs-cli-backed provider, remote.kdocs, the dsh-resource://kdocs protocol, a right-sidebar panel, a preview tab, and four read-only agent tools",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vansonffff/dsh-kdocs.git",
+    "directory": "dsh-kdocs-inside"
+  },
+  "homepage": "https://github.com/vansonffff/dsh-kdocs#readme",
+  "bugs": {
+    "url": "https://github.com/vansonffff/dsh-kdocs/issues"
+  },
+  "author": "vansonffff",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": {
+      "default": "./src/index.js"
+    },
+    "./service": {
+      "default": "./src/service.js"
+    },
+    "./types": {
+      "default": "./src/types.js"
+    },
+    "./errors": {
+      "default": "./src/errors.js"
+    },
+    "./typert": {
+      "default": "./typert.host.js"
+    },
+    "./remote-client": {
+      "default": "./typert.remote-client.js"
+    },
+    "./client": {
+      "default": "./client.js"
+    },
+    "./package.json": "./package.json",
+    "./resource": {
+      "default": "./src/resource.js"
+    },
+    "./tools": {
+      "default": "./src/tools.js"
+    }
+  },
+  "files": [
+    "src",
+    "client.js",
+    "typert.host.js",
+    "typert.remote-client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.5-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "zod": "^4.6.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis-plugin",
+    "kdocs",
+    "wps",
+    "金山文档",
+    "cloud-documents",
+    "sidebar"
+  ]
+}

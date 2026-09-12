@@ -1,0 +1,4 @@
+- insert:
+    - id: kdocs-settings
+      name: kdocs-settings
+      inject: [credentials]

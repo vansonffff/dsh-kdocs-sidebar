@@ -1,0 +1,9 @@
+# 依赖（本包没有构建步骤：客户端 bundle 是手写产物，已入库）
+node_modules/
+
+# macOS
+.DS_Store
+
+# 打包/发布产物
+*.tgz
+npm-debug.log*

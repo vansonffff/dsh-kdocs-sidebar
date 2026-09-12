@@ -1,0 +1,53 @@
+{
+  "name": "kdocs-settings",
+  "version": "0.1.1",
+  "description": "金山文档 (kdocs) settings section for DeepSeek Harness",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vansonffff/dsh-kdocs.git",
+    "directory": "kdocs-settings"
+  },
+  "homepage": "https://github.com/vansonffff/dsh-kdocs#readme",
+  "bugs": {
+    "url": "https://github.com/vansonffff/dsh-kdocs/issues"
+  },
+  "author": "vansonffff",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs"
+    },
+    "./client": {
+      "default": "./dist/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis-plugin",
+    "kdocs",
+    "wps",
+    "金山文档",
+    "settings"
+  ]
+}
