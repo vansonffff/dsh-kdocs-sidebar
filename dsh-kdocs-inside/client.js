@@ -1136,6 +1136,7 @@ window.__ModuleLoader__.load({
     /** Panel copy. Thunked lookups on the registry re-read these per language. */
     const KDOCS_ZH = {
       guideTitle: '金山文档',
+      chipError: '渲染失败',
       guideDescription: '浏览个人金山文档云盘',
       searchPlaceholder: '搜索云文档',
       loading: '加载中…',
@@ -1187,6 +1188,7 @@ window.__ModuleLoader__.load({
       linkNote: '链接如下（若未自动打开，可复制到浏览器）。',
       copiedNote: '链接已复制到剪贴板。',
       detailFailed: '读取详情失败。',
+      linkFailed: '读取文档链接失败。',
       detailKind: '类型',
       detailExt: '格式',
       detailModified: '修改时间',
@@ -1204,6 +1206,7 @@ window.__ModuleLoader__.load({
     };
     const KDOCS_EN = {
       guideTitle: 'KDocs',
+      chipError: 'Render failed',
       guideDescription: 'Browse your personal 金山文档 drive',
       searchPlaceholder: 'Search documents',
       loading: 'Loading…',
@@ -1255,6 +1258,7 @@ window.__ModuleLoader__.load({
       linkNote: 'Link below; copy it into a browser if it did not open.',
       copiedNote: 'Link copied to the clipboard.',
       detailFailed: 'Could not read the details.',
+      linkFailed: 'Could not read the document link.',
       detailKind: 'Kind',
       detailExt: 'Format',
       detailModified: 'Modified',
@@ -2548,7 +2552,15 @@ window.__ModuleLoader__.load({
           const settled = result === undefined ? undefined : unwrapResult(result);
           const link = settled?.ok === true ? settled.value : undefined;
           setMenu(undefined);
-          if (typeof link !== 'string' || link === '') return;
+          if (typeof link !== 'string' || link === '') {
+            // Silent before 0.2.6, and silence is the worst answer here: the reader
+            // clicked a menu item and nothing happened at all, which reads as a dead
+            // control rather than a failed call. The detail sheet is already this
+            // panel's error surface (`detail` uses it the same way), so the failure
+            // lands somewhere visible without inventing a new one.
+            setDetail({ title: entry.name, note: settled?.error?.message ?? t('linkFailed') });
+            return;
+          }
           try {
             window.open(link, '_blank', 'noreferrer');
           } catch {
@@ -2563,7 +2575,10 @@ window.__ModuleLoader__.load({
           const settled = result === undefined ? undefined : unwrapResult(result);
           const link = settled?.ok === true ? settled.value : undefined;
           setMenu(undefined);
-          if (typeof link !== 'string' || link === '') return;
+          if (typeof link !== 'string' || link === '') {
+            setDetail({ title: entry.name, note: settled?.error?.message ?? t('linkFailed') });
+            return;
+          }
           let copied = false;
           try {
             await window.navigator.clipboard.writeText(link);
@@ -3194,7 +3209,7 @@ window.__ModuleLoader__.load({
      * @param {any} Component - the body component.
      * @returns {any} a component that renders either the body or its error.
      */
-    function guarded(Component) {
+    function guarded(Component, options = {}) {
       class Guarded extends react.Component {
         /**
          * @param {any} props - the seat props passed through to the body.
@@ -3215,6 +3230,17 @@ window.__ModuleLoader__.load({
         render() {
           if (this.state.error === undefined) return jsx(Component, this.props);
           const message = String(this.state.error && this.state.error.message ? this.state.error.message : this.state.error);
+          // A chip is a few characters wide and truncates, so the failure text is
+          // put in `title` — this is a tab label after all, and the point is that a
+          // reader sees *something* where a blank tab used to be and can hover for
+          // the reason. A body gets the message and the top of the stack.
+          if (options.compact === true) {
+            return jsx('span', {
+              'data-kdocs-error': 'true',
+              title: `${Component.name || 'kdocs'} 渲染失败：${message}`,
+              children: options.label ?? '渲染失败',
+            });
+          }
           const stack = String((this.state.error && this.state.error.stack) || '').split('\n').slice(0, 4).join('\n');
           return jsx('div', {
             'data-kdocs-error': 'true',
@@ -3493,13 +3519,15 @@ window.__ModuleLoader__.load({
           name: 'sidebar.right.pane.tab.title',
           key: KDOCS_ID,
           locale: KDOCS_NS,
-        }, KDocsPanelTitle)), 'kdocs: kdocs-files tab title');
+        }, guarded(KDocsPanelTitle, { compact: true, label: t('chipError') }))),
+          'kdocs: kdocs-files tab title');
 
         ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
           name: 'sidebar.right.pane.tab.title',
           key: PREVIEW_ID,
           locale: KDOCS_NS,
-        }, KDocsPanelTitle)), 'kdocs: kdocs-preview tab title');
+        }, guarded(KDocsPanelTitle, { compact: true, label: t('chipError') }))),
+          'kdocs: kdocs-preview tab title');
 
         // M6: the viewer that claims the addresses the panel emits.
         ctx.effect(() => ctx.sidebarRightTabs.register(kdocsPreviewDefinition(t)), 'kdocs: kdocs-preview tab type');
