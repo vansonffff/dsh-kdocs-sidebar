@@ -35,12 +35,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vansonffff/dsh-kdocs.git",
+    "url": "git+https://github.com/vansonffff/dsh-kdocs-sidebar.git",
     "directory": "kdocs-settings"
   },
-  "homepage": "https://github.com/vansonffff/dsh-kdocs#readme",
+  "homepage": "https://github.com/vansonffff/dsh-kdocs-sidebar#readme",
   "bugs": {
-    "url": "https://github.com/vansonffff/dsh-kdocs/issues"
+    "url": "https://github.com/vansonffff/dsh-kdocs-sidebar/issues"
   },
   "license": "MIT"
 }

@@ -75,10 +75,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vansonffff/dsh-kdocs.git",
+    "url": "git+https://github.com/vansonffff/dsh-kdocs-sidebar.git",
     "directory": "dsh-kdocs-inside"
   },
-  "homepage": "https://github.com/vansonffff/dsh-kdocs#readme",
+  "homepage": "https://github.com/vansonffff/dsh-kdocs-sidebar#readme",
   "license": "MIT",
   "private": false
 }
