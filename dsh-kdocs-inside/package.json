@@ -1,17 +1,7 @@
 {
   "name": "dsh-kdocs-inside",
-  "version": "0.2.0",
-  "description": "金山文档 (KDocs/WPS) capability seam for DeepSeek Harness — ctx.kdocs, a kdocs-cli-backed provider, remote.kdocs, the dsh-resource://kdocs protocol, a right-sidebar panel, a preview tab, and four read-only agent tools",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/vansonffff/dsh-kdocs.git",
-    "directory": "dsh-kdocs-inside"
-  },
-  "homepage": "https://github.com/vansonffff/dsh-kdocs#readme",
-  "bugs": {
-    "url": "https://github.com/vansonffff/dsh-kdocs/issues"
-  },
-  "author": "vansonffff",
+  "version": "0.2.6",
+  "description": "金山文档 (KDocs) for DeepSeek Harness — browse, preview and quote documents from the right sidebar, with four read-only Agent tools backed by the official kdocs-cli",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -50,7 +40,9 @@
     "typert.host.js",
     "typert.remote-client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {
@@ -69,18 +61,24 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2"
   },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-api-gateway": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-typert-registry": "^0.1.5-rc.1"
+  },
   "engines": {
     "node": ">=22.19.0"
   },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:live": "KDOCS_LIVE=require node --test test/m2-gate.test.js test/tools.test.js test/resource.test.js test/remote-contract.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vansonffff/dsh-kdocs.git",
+    "directory": "dsh-kdocs-inside"
+  },
+  "homepage": "https://github.com/vansonffff/dsh-kdocs#readme",
   "license": "MIT",
-  "keywords": [
-    "dsh",
-    "deepseek-harness",
-    "cordis-plugin",
-    "kdocs",
-    "wps",
-    "金山文档",
-    "cloud-documents",
-    "sidebar"
-  ]
+  "private": false
 }

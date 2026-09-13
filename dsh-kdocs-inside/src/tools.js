@@ -227,6 +227,17 @@ export function registerKDocsTools(ctx) {
       address: ADDRESS_PARAMETER,
     },
     output: {
+      // The paged contract, shared with `kdocs_search`:
+      //
+      //   { entries, pageCount, nextCursor?, total? }
+      //
+      // `pageCount` is how many lines *this reply* carries; `total` is how many
+      // exist in the whole drive and appears only when the backend reported one.
+      // They are not interchangeable, and the runtime enforces that: a value
+      // carrying an undeclared field or missing a required one fails with
+      // `INVALID_TOOL_OUTPUT` before `render` ever runs. This tool used to
+      // require `pageCount` while returning `total`, so *every* listing —
+      // including an empty folder — failed validation.
       schema: {
         type: 'object',
         additionalProperties: false,
@@ -241,7 +252,9 @@ export function registerKDocsTools(ctx) {
         type: 'text',
         text: value.entries.length === 0
           ? 'The folder is empty.'
-          : `${String(value.total)} entr${value.total === 1 ? 'y' : 'ies'}:\n${value.entries.join('\n')}`
+          : `${String(value.pageCount)} entr${value.pageCount === 1 ? 'y' : 'ies'}`
+            + (value.total === undefined ? '' : ` out of ${String(value.total)}`)
+            + `:\n${value.entries.join('\n')}`
             + (value.nextCursor === undefined ? '' : `\n\nMore results: call kdocs_list again with cursor="${value.nextCursor}"`),
       }],
     },
@@ -250,8 +263,9 @@ export function registerKDocsTools(ctx) {
         const page = await seam().list(parentOf(args), args.cursor, exec.signal);
         const entries = page.entries.map((entry) => entryLine(entry, addressOf));
         /** @type {any} */
-        const value = { entries, total: page.entries.length };
+        const value = { entries, pageCount: entries.length };
         if (page.nextCursor !== undefined) value.nextCursor = page.nextCursor;
+        if (typeof page.total === 'number') value.total = page.total;
         return value;
       } catch (error) {
         throw toToolError(error, 'kdocs_list');
@@ -291,20 +305,25 @@ export function registerKDocsTools(ctx) {
       },
     },
     output: {
+      // Same paged contract as `kdocs_list`. `total` is deliberately *not*
+      // required: the count is a separate backend round trip, so it exists only
+      // when the call asked for it with `withTotal`. Declaring it required is what
+      // used to make every ordinary search fail output validation.
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           entries: { type: 'array', required: true, items: { type: 'string' } },
           nextCursor: { type: 'string' },
-          total: { type: 'integer', required: true },
+          pageCount: { type: 'integer', required: true },
+          total: { type: 'integer' },
         },
       },
       render: (_args, value) => [{
         type: 'text',
         text: (value.entries.length === 0
           ? 'No documents matched.'
-          : `${String(value.entries.length)} match${value.entries.length === 1 ? '' : 'es'}`
+          : `${String(value.pageCount)} match${value.pageCount === 1 ? '' : 'es'}`
             + (value.total === undefined ? '' : ` out of ${String(value.total)} in total`)
             + `:\n${value.entries.join('\n')}`)
           + (value.nextCursor === undefined

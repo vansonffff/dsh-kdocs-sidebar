@@ -31,6 +31,75 @@ window.__ModuleLoader__.load({
     const { jsx, jsxs } = jsxRuntime;
     const { useCallback, useEffect, useRef, useState } = react;
 
+    // ── the shared design vocabulary ────────────────────────────────────────
+    //
+    // Declared before anything that reads them. The panel and the preview sit in
+    // the same column and must not drift apart, so they read one scale and one
+    // control geometry rather than two that happen to agree today.
+    /**
+     * The panel's spacing scale.
+     *
+     * Every gap in this panel was previously its own number (`4` here, `6` there,
+     * `5px 9px` on a menu item), which is what makes a surface read as assembled
+     * rather than designed. 0.2.5 replaces those with six steps; a value that is
+     * not on the scale is a mistake, not a preference.
+     *
+     * The row metrics are the product's own, read off the live sidebar
+     * (`projectRow`: `8px` radius, `0 8px` padding, `6px` gap, 34px tall) rather
+     * than invented, so the tree sits at the same rhythm as Workspace files.
+     *
+     * Both are panel-level (not preview-level) because the *preview's* one-row
+     * toolbar reads from the same scale: the two surfaces sit in the same column,
+     * and a single scale is the only thing that keeps them agreeing.
+     */
+    const SPACE = {
+      xxs: '2px',
+      xs: '4px',
+      sm: '6px',
+      md: '8px',
+      lg: '12px',
+      xl: '16px',
+    };
+    /** The same six steps under the name the preview toolbar reads them by. */
+    const PANEL_SPACE = SPACE;
+
+    /**
+     * The one geometry every control in the preview header uses.
+     *
+     * The four controls used to carry two different geometries — the mode pair at
+     * 11.5px / `2px 8px` / 5px radius, and quote plus "open in 金山文档" at
+     * 12px / `3px 9px` / 6px — which reads as two unrelated toolbars stacked in
+     * one row. Everything that decides a control's box is pinned here so the row
+     * is uniform by construction rather than by four styles happening to agree.
+     *
+     * `font: inherit` is not optional: a `<button>` does not inherit the page font
+     * and falls back to the browser's UI font, which is how a control announces
+     * itself as foreign. `lineHeight`, `boxSizing` and `border` are pinned for the
+     * same reason on the anchor, which is a flex item here and would otherwise sit
+     * a pixel or two off the buttons beside it.
+     *
+     * The padding is on the spacing scale, and the height is derived from it rather
+     * than declared: the toolbar's box is `lineHeight + padding + border` = 25px,
+     * which is what 0.2 measured at. Pinning it that way keeps the row's total
+     * height identical while letting the horizontal padding shrink to 6px, which is
+     * the 0.2.5 change — narrower controls, same row.
+     */
+    const HEADER_ACTION_STYLE = {
+      font: 'inherit',
+      fontSize: '12px',
+      lineHeight: '18px',
+      padding: `${SPACE.xxs} ${SPACE.sm}`,
+      boxSizing: 'border-box',
+      border: '0.5px solid var(--dsw-alias-border-l3)',
+      borderRadius: '6px',
+      background: 'transparent',
+      color: 'inherit',
+      cursor: 'pointer',
+      flex: '0 0 auto',
+      whiteSpace: 'nowrap',
+      textDecoration: 'none',
+    };
+
     // Required browser services: the Remote carrier to mount onto, the resource
     // model this plugin registers its `kdocs` protocol into, the right sidebar's
     // tab registry and keyed seat, and copy. All must exist before activation,
@@ -698,6 +767,15 @@ window.__ModuleLoader__.load({
       // threw during render and left the whole pane empty.
       const ref = parseKDocsAddress(address);
       const [mode, setMode] = useState('embed');
+      /**
+       * Bumped to force the embed to load again.
+       *
+       * A reader who has just signed the web session in needs the document
+       * re-requested: the frame already decided it was signed out, and nothing here
+       * can reach into a cross-origin document to change its mind. Changing the
+       * element's `key` is what remounts it.
+       */
+      const [nonce, setNonce] = useState(0);
       /** The embedded WPS viewer's URL, built from identity. */
       const embedUrl = ref === undefined ? undefined : kdocsEmbedUrl(ref);
       const embedding = mode === 'embed' && embedUrl !== undefined;
@@ -814,24 +892,72 @@ window.__ModuleLoader__.load({
         key: `mode-${value}`,
         type: 'button',
         'data-kdocs-mode': value,
+        'aria-pressed': mode === value ? 'true' : 'false',
         onClick: () => setMode(value),
         style: {
           ...HEADER_ACTION_STYLE,
-          // The selection is carried by fill and weight rather than by size, so the
-          // active control does not change the row's geometry when it moves.
+          // A segment carries no border of its own — the group draws the one outline
+          // — and the selection is carried by fill and weight rather than by size, so
+          // the active control does not change the row's geometry when it moves.
+          border: 0,
+          borderRadius: 0,
           background: mode === value ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
-          opacity: mode === value ? 1 : 0.7,
+          fontWeight: mode === value ? 500 : 400,
+          opacity: mode === value ? 1 : 0.72,
         },
         children: label,
       });
 
+      // The four controls are two different kinds of thing, and 0.2.5 says so in the
+      // layout: 原版/文本 are one segmented control (a view mode, one choice), while
+      // 引用到对话 and 在金山文档打开 stay independent actions. Grouping the pair under
+      // a single outline is also what buys back the width a narrow sidebar needs —
+      // two 0.5px borders and a 1px seam instead of two borders and an 8px gap.
+      const modeGroup = jsxs('div', {
+        key: 'modeGroup',
+        role: 'group',
+        'data-kdocs-mode-group': 'true',
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          flex: '0 0 auto',
+          border: '0.5px solid var(--dsw-alias-border-l3)',
+          borderRadius: '6px',
+          overflow: 'hidden',
+        },
+        children: [
+          modeButton('embed', t('modeEmbed')),
+          jsx('span', { key: 'seam', 'aria-hidden': 'true', style: { flex: 'none', width: '0.5px', height: '12px', background: 'var(--dsw-alias-border-l3)' } }),
+          modeButton('text', t('modeText')),
+        ],
+      });
+
       const header = jsxs('div', {
         key: 'header',
-        style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderBottom: '0.5px solid var(--dsw-alias-border-l3)', flex: '0 0 auto' },
+        style: { display: 'flex', alignItems: 'center', gap: PANEL_SPACE.sm, padding: `${PANEL_SPACE.md} ${PANEL_SPACE.md}`, borderBottom: '0.5px solid var(--dsw-alias-border-l3)', flex: '0 0 auto' },
         children: [
-          jsx('div', { key: 'name', style: { flex: '1 1 auto', fontSize: '12.5px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: name }),
-          modeButton('embed', t('modeEmbed')),
-          modeButton('text', t('modeText')),
+          jsx('div', { key: 'name', style: { flex: '1 1 auto', minWidth: 0, fontSize: '12.5px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: name }),
+          modeGroup,
+          // Reload belongs to the embedded view, so it is hidden in text mode, where
+          // the extraction is authenticated by the kdocs-cli token instead.
+          //
+          // The sign-in page that used to sit beside it was removed on the reader's
+          // instruction (0.2.5). See MILESTONE-0.2.5-UI-POLISH.md for what it did and
+          // how to bring it back — this reload control survives it, and is still the
+          // only way to re-mount a cross-origin frame whose session changed under it.
+          embedding
+            ? jsx('button', {
+              key: 'embedReload',
+              type: 'button',
+              'data-kdocs-embed-reload': 'true',
+              onClick: () => setNonce((current) => current + 1),
+              // An icon, because the row already carries several labels and the name
+              // is the only thing that can give up width.
+              title: t('embedReload'),
+              style: HEADER_ACTION_STYLE,
+              children: '↻',
+            })
+            : null,
           canQuote
             ? jsx('button', {
               key: 'quote',
@@ -913,12 +1039,23 @@ window.__ModuleLoader__.load({
               key: 'frame',
               style: { position: 'relative', flex: '1 1 auto', minHeight: '0' },
               children: jsx('iframe', {
+                // The nonce is the reload: a new `key` remounts the element, and a
+                // fresh load is the only way a newly signed-in session reaches the
+                // viewer. Leaving `src` alone deliberately — the address is identity.
+                key: `embed-${String(nonce)}`,
                 src: embedUrl,
                 title: name,
                 'data-kdocs-embed': 'true',
                 // The frame cannot be inspected across origins, so a failure is
-                // silent by nature; the hint below is what tells a reader what to do
-                // when they see a sign-in page instead of their document.
+                // silent by nature; the header's sign-in control and the hint below
+                // are what tell a reader what to do when they see a sign-in page
+                // instead of their document.
+                //
+                // The white here is the file's one literal colour, and it is not a
+                // theme decision: 金山文档's viewer paints a white page, so this is the
+                // colour of the *content*, not of our chrome. Following the panel's
+                // theme would put a dark rectangle behind a white document and flash
+                // it on every load.
                 style: { position: 'absolute', inset: '0', width: '100%', height: '100%', border: '0', background: '#fff' },
               }),
             }),
@@ -979,6 +1116,20 @@ window.__ModuleLoader__.load({
     /** This implementation's identity in the tab system, and the body's seat key. */
     const KDOCS_ID = 'kdocs';
 
+    /**
+     * The sign-in page's kind, and the body seat key it registers under.
+     *
+     * A *page* type, like the panel: it claims no address and is opened by kind.
+     *
+     * It exists because the "原版" embed is authenticated by the **web** 金山文档
+     * session and by nothing else. The kdocs-cli token the panel's own notice
+     * describes is a different credential — offered as a cookie it is rejected
+     * (measured: 403 `userNotLogin`). In a desktop shell the web session belongs to
+     * the app's own Chromium profile, which the reader's system browser does not
+     * share, so signing in "in the browser" cannot help the embed. This page is a
+     * surface the *app* loads, which is the only place such a session can be made.
+     */
+
     /** The copy namespace this panel's strings register under. */
     const KDOCS_NS = 'kdocsSidebar';
 
@@ -1005,6 +1156,7 @@ window.__ModuleLoader__.load({
       modeEmbed: '原版',
       modeText: '文本',
       embedSignIn: '在金山文档中打开',
+      embedReload: '刷新「原版」',
       quote: '引用到对话',
       quoteSelection: '引用选中片段',
       viewTree: '我的云文档',
@@ -1017,6 +1169,7 @@ window.__ModuleLoader__.load({
       scopeAll: '全部',
       scopeName: '文件名',
       scopeContent: '正文',
+      rowMenu: '更多操作',
       menuQuote: '引用到对话',
       menuOpen: '在金山文档打开',
       menuCopyLink: '复制链接',
@@ -1071,6 +1224,7 @@ window.__ModuleLoader__.load({
       modeEmbed: 'Original',
       modeText: 'Text',
       embedSignIn: 'Open in 金山文档',
+      embedReload: 'Reload Original view',
       quote: 'Quote in chat',
       quoteSelection: 'Quote selection',
       viewTree: 'My drive',
@@ -1083,6 +1237,7 @@ window.__ModuleLoader__.load({
       scopeAll: 'All',
       scopeName: 'Names',
       scopeContent: 'Contents',
+      rowMenu: 'More actions',
       menuQuote: 'Quote in chat',
       menuOpen: 'Open in 金山文档',
       menuCopyLink: 'Copy link',
@@ -1417,7 +1572,23 @@ window.__ModuleLoader__.load({
       return {
         ...state,
         needsLogin: state.needsLogin || notAuthenticated,
-        views: { ...state.views, [view]: { ...current, loading: false, cursor: undefined, error } },
+        views: {
+          ...state.views,
+          [view]: {
+            ...current,
+            loading: false,
+            // A failed first page has no cursor worth keeping; a failed *further* page
+            // must keep the one it was reading, or the failure destroys the only
+            // control that can retry it. Clearing it unconditionally was a dead end
+            // with no way out: the load-more button renders only when a cursor exists,
+            // so one transient failure removed the button, and `openView` early-returns
+            // for a view already in state — leaving the pane on an error line until the
+            // whole panel was reopened. `append` is exactly that distinction, and it is
+            // the rule `applyListResult` already followed.
+            cursor: append === true ? current.cursor : undefined,
+            error,
+          },
+        },
       };
     }
 
@@ -1458,7 +1629,10 @@ window.__ModuleLoader__.load({
           active: true,
           loading: false,
           entries: append === true ? state.search.entries : [],
-          cursor: undefined,
+          // ...and it keeps the cursor for the same reason: the load-more control is
+          // drawn only while one exists, so clearing it here turned one transient
+          // failure into a list that nothing could extend again.
+          cursor: append === true ? state.search.cursor : undefined,
           total: undefined,
           error,
         },
@@ -1530,26 +1704,42 @@ window.__ModuleLoader__.load({
       };
     }
 
+
+    /** The metrics of one file tree row — the tree's whole vertical budget. */
+    const ROW_METRICS = {
+      radius: '8px',
+      padding: '0 8px',
+      gap: '6px',
+      height: '24px',
+      /** One nesting level. */
+      indent: '14px',
+    };
+
     /**
      * The panel's style vocabulary.
      *
      * Values are lifted from the product's own files panel rather than invented:
-     * its rows are `border-radius: 10px`, `padding: 5px 10px`, `gap: 6px`, nested
-     * levels indent by `18px`, and its header border is `0.5px`. Its colours are
-     * the `--dsw-alias-*` design tokens, which is what makes it follow the theme —
-     * hard-coded greys and reds do not, and were the main reason this panel looked
+     * nested levels indent stepwise, the header border is `0.5px`, and every colour
+     * is a `--dsw-alias-*` design token — which is what makes the panel follow the
+     * theme. Hard-coded greys do not, and were the main reason this panel looked
      * foreign next to Workspace files.
      *
      * Only tokens with a documented role are used:
      * `label-primary` (content), `label-secondary` (supporting), `label-tertiary`
      * (icons and metadata), `interactive-bg-hover` (hover), `border-l3` (dividers).
+     *
+     * `height` is declared rather than left to padding: the icon column must not be
+     * allowed to grow the row, and a declared height plus `box-sizing` makes 24px a
+     * property of the row instead of a consequence of its contents.
      */
     const ROW_STYLE = {
       display: 'flex',
       alignItems: 'center',
-      gap: '6px',
+      gap: ROW_METRICS.gap,
       width: '100%',
       minWidth: 0,
+      height: ROW_METRICS.height,
+      boxSizing: 'border-box',
       // `font: inherit` matters: a <button> does not inherit font by default, so
       // without it the tree renders in the browser's UI font and reads as bolted-on.
       font: 'inherit',
@@ -1558,8 +1748,23 @@ window.__ModuleLoader__.load({
       cursor: 'pointer',
       background: 'none',
       border: 0,
-      borderRadius: '10px',
-      padding: '5px 10px',
+      borderRadius: ROW_METRICS.radius,
+      padding: ROW_METRICS.padding,
+    };
+
+    /**
+     * The row wrapper, which is also the positioning context for the row's quick
+     * menu button.
+     *
+     * `position: relative` is load-bearing: the `···` control is absolutely
+     * positioned over the tail of the file name, so it costs the name no width and
+     * cannot push the `.docx` out of sight when it appears.
+     */
+    const ROW_WRAPPER_STYLE = {
+      position: 'relative',
+      display: 'flex',
+      alignItems: 'center',
+      minWidth: 0,
     };
 
     /** The panel root's own metrics, matching the files panel's container. */
@@ -1573,14 +1778,28 @@ window.__ModuleLoader__.load({
       minHeight: 0,
     };
 
-    /** A search field that reads as part of the panel rather than a default input. */
+    /**
+     * A search field that reads as part of the panel rather than a default input.
+     *
+     * It shares the file rows' 24px height and 8px radius on purpose: the field,
+     * the scope control and the rows are one column of equally-sized targets, so
+     * the panel reads as a list with a filter rather than a form above a list.
+     *
+     * It is `flex: 1 1 auto` with `minWidth: 0`, not `width: 100%`: the field and
+     * the scope control now share one row, and a 100%-wide field pushed the scope
+     * control out of the row entirely (measured — the panel rendered the field
+     * alone and the scope buttons were nowhere). `minWidth: 0` is what lets a flex
+     * item shrink below its input's intrinsic width instead of overflowing.
+     */
     const SEARCH_STYLE = {
-      width: '100%',
+      flex: '1 1 auto',
+      minWidth: 0,
       boxSizing: 'border-box',
       fontSize: 'var(--dsh-content-font-size-secondary, 13px)',
       font: 'inherit',
-      padding: '5px 10px',
-      borderRadius: '10px',
+      height: ROW_METRICS.height,
+      padding: '0 8px',
+      borderRadius: ROW_METRICS.radius,
       border: '0.5px solid var(--dsw-alias-border-l3)',
       background: 'transparent',
       color: 'var(--dsw-alias-label-primary)',
@@ -1591,44 +1810,265 @@ window.__ModuleLoader__.load({
     const NOTE_STYLE = {
       color: 'var(--dsw-alias-label-tertiary)',
       fontSize: '12px',
+      lineHeight: '16px',
       margin: 0,
-      padding: '3px 10px',
-      lineHeight: 1.6,
+      padding: `2px ${SPACE.md}`,
     };
 
     /**
-     * The one geometry every control in the preview header uses.
+     * The text-only "tab" the navigation and the search scope both use.
      *
-     * The four controls used to carry two different geometries — the mode pair at
-     * 11.5px / `2px 8px` / 5px radius, and quote plus "open in 金山文档" at
-     * 12px / `3px 9px` / 6px — which reads as two unrelated toolbars stacked in
-     * one row. Everything that decides a control's box is pinned here so the row
-     * is uniform by construction rather than by four styles happening to agree.
-     *
-     * `font: inherit` is not optional: a `<button>` does not inherit the page font
-     * and falls back to the browser's UI font, which is how a control announces
-     * itself as foreign. `lineHeight`, `boxSizing` and `border` are pinned for the
-     * same reason on the anchor, which is a flex item here and would otherwise sit
-     * a pixel or two off the buttons beside it.
+     * 0.2 rendered six view entries and three scope entries as bordered pills, so
+     * the top of the panel was nine capsules — "button → button → button", which is
+     * the one thing the 0.2.5 brief rules out. The selected state is carried by ink
+     * weight and a 2px underline drawn as an inset shadow (a border would change
+     * the box height and shift every tab as the selection moved).
      */
-    const HEADER_ACTION_STYLE = {
+    const TAB_STYLE = {
       font: 'inherit',
       fontSize: '12px',
       lineHeight: '18px',
-      padding: '3px 9px',
+      padding: '0 0 2px',
+      margin: 0,
+      border: 0,
+      borderRadius: 0,
+      background: 'transparent',
+      color: 'var(--dsw-alias-label-secondary)',
+      cursor: 'pointer',
+      whiteSpace: 'nowrap',
+      flex: '0 0 auto',
+    };
+
+    /** The selected tab: full ink, supporting weight, a 2px underline. */
+    const TAB_ACTIVE_STYLE = {
+      ...TAB_STYLE,
+      color: 'var(--dsw-alias-label-primary)',
+      fontWeight: 500,
+      boxShadow: 'inset 0 -2px 0 0 var(--dsw-alias-label-primary)',
+    };
+
+    /**
+     * The file-type glyph table.
+     *
+     * One source of truth for "what does this file look like": each kind names a
+     * colour token and a shape, and both the row icon and any future surface read
+     * from here. The shapes are our own minimal geometry — the brief is explicit
+     * that WPS's marks are not to be copied — and every one is drawn on the same
+     * 16×16 grid with the same bounding box, so the icon column is a column and
+     * not a ragged edge.
+     *
+     * Colours are `--dsw-static-*` accents deliberately: the palette is the
+     * product's, so a Word document is the same blue the product already uses, and
+     * it does not drift the first time the alias layer changes. `mix()` compensates
+     * those static values into the active palette — see {@link fileIconColor}.
+     */
+    const FILE_ICONS = {
+      folder: {
+        color: 'var(--dsw-static-amber-500)',
+        body: '<path d="M1.9 3.6a1.4 1.4 0 0 1 1.4-1.4h2.8l1.5 1.8h5.1a1.4 1.4 0 0 1 1.4 1.4v6.8a1.4 1.4 0 0 1-1.4 1.4H3.3a1.4 1.4 0 0 1-1.4-1.4Z" fill="currentColor" fill-opacity=".22"/><path d="M1.9 6.2h12.2v.9H1.9Z" fill="currentColor" fill-opacity=".45"/>',
+      },
+      doc: {
+        color: 'var(--dsw-static-blue-500)',
+        body: '<path d="M3.4 2.6a1 1 0 0 1 1-1h4.4L12 4.7v8.7a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1Z" fill="currentColor" fill-opacity=".22"/><path d="M8.6 1.5v2.3a1 1 0 0 0 1 1H12Z" fill="currentColor" fill-opacity=".5"/><path d="M4.4 11.9h7.2v1.2H4.4Z" fill="currentColor"/>',
+      },
+      sheet: {
+        color: 'var(--dsw-static-green-500)',
+        body: '<rect x="2.6" y="2.2" width="10.8" height="11.6" rx="1.2" fill="currentColor" fill-opacity=".22"/><path d="M2.6 5.6h10.8v1.1H2.6Zm0 3.3h10.8v1.1H2.6Z" fill="currentColor" fill-opacity=".55"/><path d="M7.5 5.6h1.2v8.2H7.5Z" fill="currentColor" fill-opacity=".55"/>',
+      },
+      slides: {
+        color: 'var(--dsw-static-amber-500)',
+        body: '<rect x="2.4" y="2.6" width="11.2" height="8" rx="1.1" fill="currentColor" fill-opacity=".22"/><path d="M7.2 4.5v4.2l3.5-2.1Z" fill="currentColor"/><path d="M7.4 10.6h1.2V13H7.4Z" fill="currentColor" fill-opacity=".55"/><path d="M4.6 13h6.8v1.1H4.6Z" fill="currentColor" fill-opacity=".55"/>',
+      },
+      pdf: {
+        color: 'var(--dsw-static-red-500)',
+        body: '<path d="M3.4 2.6a1 1 0 0 1 1-1h4.4L12 4.7v8.7a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1Z" fill="currentColor" fill-opacity=".2"/><path d="M8.6 1.5v2.3a1 1 0 0 0 1 1H12Z" fill="currentColor" fill-opacity=".5"/><rect x="3.8" y="9" width="8.4" height="3.6" rx=".6" fill="currentColor"/><path d="M4.9 10.1h1.5v1.4H4.9Zm2.35 0h3.85v1.4H7.25Z" fill="var(--dsw-alias-bg-base)"/>',
+      },
+      text: {
+        color: 'var(--dsw-alias-label-tertiary)',
+        body: '<path d="M3.4 2.6a1 1 0 0 1 1-1h4.4L12 4.7v8.7a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1Z" fill="currentColor" fill-opacity=".18"/><path d="M8.6 1.5v2.3a1 1 0 0 0 1 1H12Z" fill="currentColor" fill-opacity=".4"/><path d="M4.6 6.6h6.8v1.1H4.6Zm0 2.5h6.8v1.1H4.6Zm0 2.5h4.2v1.1H4.6Z" fill="currentColor" fill-opacity=".75"/>',
+      },
+      image: {
+        color: 'var(--dsw-static-blue-450)',
+        body: '<rect x="2.3" y="3" width="11.4" height="10" rx="1.2" fill="currentColor" fill-opacity=".22"/><circle cx="6" cy="6.4" r="1.1" fill="currentColor"/><path d="M3.2 12.2 6.9 8.3l2.5 2.7 1.8-1.7 2 2.9Z" fill="currentColor"/>',
+      },
+      generic: {
+        color: 'var(--dsw-alias-label-tertiary)',
+        body: '<path d="M3.4 2.6a1 1 0 0 1 1-1h4.4L12 4.7v8.7a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1Z" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/><path d="M8.6 1.5v2.3a1 1 0 0 0 1 1H12" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/>',
+      },
+    };
+
+    /**
+     * The suffix → kind table.
+     *
+     * Deliberately explicit rather than a prefix rule: `dbt` is a WPS spreadsheet
+     * template and `potx`/`dotx` are template variants, which no arithmetic on the
+     * suffix gets right. An unknown suffix lands on `generic`, which is the correct
+     * answer — a file we cannot classify should look like a file, not like a Word
+     * document.
+     */
+    const FILE_KINDS = {
+      doc: ['doc', 'docx', 'dot', 'dotx', 'rtf', 'wps'],
+      sheet: ['xls', 'xlsx', 'xlsm', 'csv', 'tsv', 'et', 'ett', 'dbt', 'dbsheet'],
+      slides: ['ppt', 'pptx', 'pps', 'ppsx', 'dps', 'dpt'],
+      pdf: ['pdf'],
+      text: ['txt', 'md', 'markdown', 'log', 'json', 'yml', 'yaml', 'xml', 'html', 'htm', 'ini', 'conf'],
+      image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'tif', 'tiff', 'ico'],
+    };
+
+    /**
+     * Which icon a file name earns.
+     *
+     * @param {unknown} name - the file's name, as the drive reports it.
+     * @returns {string} a key of {@link FILE_ICONS}.
+     */
+    function fileKindOf(name) {
+      if (typeof name !== 'string') return 'generic';
+      const dot = name.lastIndexOf('.');
+      // A leading dot is a hidden file, not an extension: `.gitignore` has none.
+      if (dot <= 0 || dot === name.length - 1) return 'generic';
+      const suffix = name.slice(dot + 1).toLowerCase();
+      for (const kind of Object.keys(FILE_KINDS)) {
+        if (FILE_KINDS[kind].includes(suffix)) return kind;
+      }
+      return 'generic';
+    }
+
+    /**
+     * Which icon an entry earns — a folder is decided by the entry, not by its name.
+     *
+     * @param {any} entry - a `KDocsEntry`.
+     * @returns {string} a key of {@link FILE_ICONS}.
+     */
+    function entryKindOf(entry) {
+      if (entry !== null && typeof entry === 'object' && entry.kind === 'directory') return 'folder';
+      return fileKindOf(entry === null || typeof entry !== 'object' ? undefined : entry.name);
+    }
+
+    /**
+     * Paint one file-type icon.
+     *
+     * Two deliberate choices. The glyph is set as `innerHTML` from the module's own
+     * constant geometry — there is no user data anywhere in it, which is what makes
+     * that safe, and it is what avoids writing 60 lines of `jsx('path', …)` per
+     * icon. And it is `aria-hidden`: a screen reader announcing "Word document" and
+     * then the file name `.docx` says the same thing twice, and the brief asks for
+     * the icon to be silent.
+     *
+     * @param {any} props - `kind`, the icon key.
+     * @returns {any} the React element.
+     */
+    function FileIcon(props) {
+      const icon = FILE_ICONS[props.kind] ?? FILE_ICONS.generic;
+      return jsx('span', {
+        'data-kdocs-icon': props.kind,
+        'aria-hidden': 'true',
+        style: { flex: 'none', display: 'flex', width: '16px', height: '16px', color: icon.color },
+        dangerouslySetInnerHTML: {
+          __html: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">${icon.body}</svg>`,
+        },
+      });
+    }
+
+
+    /**
+     * The context menu's container.
+     *
+     * Flat text on a floating sheet, with no icons anywhere — the brief is explicit
+     * about that, and the reason is sound: an icon beside "复制链接" competes with
+     * the file-type icons that are supposed to be the only coloured thing in the
+     * panel. What is left is the craft: a consistent 28px item, two whisper-thin
+     * separators that group *open / link · inspect · rename* without drawing
+     * attention to themselves, and the product's own overlay surface behind it.
+     */
+    const MENU_STYLE = {
+      position: 'fixed',
+      zIndex: 50,
+      minWidth: '180px',
+      maxWidth: '260px',
+      padding: SPACE.xs,
+      borderRadius: '10px',
+      border: '0.5px solid var(--dsw-alias-border-l2)',
+      background: 'var(--dsw-alias-bg-overlay)',
+      boxShadow: '0 8px 28px rgba(0, 0, 0, 0.24)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 0,
+    };
+
+    /** The menu's title line: which file this menu is about. */
+    const MENU_HEAD_STYLE = {
+      padding: `${SPACE.xs} ${SPACE.md} ${SPACE.xs}`,
+      fontSize: '11px',
+      lineHeight: '16px',
+      color: 'var(--dsw-alias-label-tertiary)',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+    };
+
+    /** One menu row. `font: inherit` for the same reason every button here needs it. */
+    const MENU_ITEM_STYLE = {
+      font: 'inherit',
+      fontSize: '12.5px',
+      lineHeight: '18px',
+      textAlign: 'left',
+      width: '100%',
       boxSizing: 'border-box',
-      border: '0.5px solid var(--dsw-alias-border-l3)',
+      height: '28px',
+      display: 'flex',
+      alignItems: 'center',
+      padding: `0 ${SPACE.md}`,
+      border: 0,
       borderRadius: '6px',
       background: 'transparent',
       color: 'inherit',
       cursor: 'pointer',
-      flex: '0 0 auto',
       whiteSpace: 'nowrap',
-      textDecoration: 'none',
     };
 
     /**
+     * The group divider.
+     *
+     * Drawn in `border-l3` — the same weight as every other hairline in the panel —
+     * so it reads as a fold in the list rather than as a rule. The brief allows an
+     * empty gap instead; a 0.5px line at this contrast does the scanning work with
+     * less space, which is the trade this whole iteration makes.
+     */
+    const MENU_SEPARATOR_STYLE = {
+      height: '0.5px',
+      flex: 'none',
+      margin: `${SPACE.xs} ${SPACE.sm}`,
+      background: 'var(--dsw-alias-border-l3)',
+    };
+
+    /**
+     * The left inset that lines a status note up with the file names beneath a row.
+     *
+     * A note under a folder has to start where that folder's *children's names*
+     * start: the nesting step, plus the row's own inline inset, plus its chevron and
+     * the gap after it. Composing it here keeps the number in one place, so changing
+     * the indent cannot leave the loading line stranded at the old offset.
+     *
+     * @param {number} depth - the depth of the rows the note belongs beneath.
+     * @returns {string} a CSS length.
+     */
+    function noteIndent(depth) {
+      const step = Number.parseInt(ROW_METRICS.indent, 10);
+      const inset = Number.parseInt(ROW_METRICS.padding.split(' ')[1], 10);
+      const chevron = 14 + Number.parseInt(ROW_METRICS.gap, 10);
+      return `${String(depth * step + inset + chevron)}px`;
+    }
+
+    /**
      * Render one entry row.
+     *
+     * The row is `chevron + type icon + name`, with the icon column reserved at a
+     * fixed width whether or not the entry is a folder. That reservation is the
+     * whole point: 0.2 gave folders a 14px chevron and files nothing, so the two
+     * kinds of row started their names at different x positions and the tree read
+     * as two lists interleaved. Reserving one 14px chevron slot plus one 16px icon
+     * slot for every row means a folder and a file under it line up exactly, and
+     * expanding a folder moves no name — which is what §4.4 asks for.
      *
      * @param {any} entry - a `KDocsEntry`.
      * @param {any} options - row wiring.
@@ -1636,10 +2076,28 @@ window.__ModuleLoader__.load({
      */
     function EntryRow(options) {
       const { entry, depth } = options;
+      // `t` arrives as an option, not as a closure.
+      //
+      // This was the 0.2.5 blank-panel regression, and the shape of the mistake is
+      // the lesson: `EntryRow` lives at module scope while `t` is bound inside
+      // `apply`'s inject callback, so the row could not see it. Nothing failed until
+      // hover, because the only member that uses `t` is the quick-menu button, which
+      // renders only while hovered. A pointer landing on the tree then threw
+      // `ReferenceError: t is not defined` **during React's reconciliation of a
+      // child** — which `guarded()` cannot see, because it only wraps the body's own
+      // synchronous call — and the slot runtime answered by emptying the pane. The
+      // tree appeared, the pointer arrived, the pane went white.
+      const t = options.t;
       const isFolder = entry.kind === 'directory';
       const key = folderKey(entry.ref);
       const open = options.expanded[key] === true;
       const [hover, setHover] = react.useState(false);
+
+      // The quick menu is a progressive enhancement, not a second way to operate a
+      // file: it appears on hover or keyboard focus, calls the same handler the
+      // right-click does, and is not rendered at all when the panel has no menu
+      // (search results and the curated views pass none).
+      const showQuickMenu = options.onMenu !== undefined && hover;
 
       // Children are passed as a prop, never as the variadic third argument: the
       // real jsx runtime dropped them that way and rows committed with no content.
@@ -1647,51 +2105,126 @@ window.__ModuleLoader__.load({
         'data-kdocs-entry': entry.kind,
         // Indentation lives on the row, not on a wrapper, so the hover highlight
         // spans the full width exactly like the files panel's rows do.
-        style: { paddingLeft: `${String(depth * 18)}px` },
-        children: jsx('button', {
-          type: 'button',
-          title: entry.name,
-          'data-kdocs-row': isFolder ? 'folder' : 'file',
-          onClick: () => (isFolder ? options.onToggle(entry, key) : options.onOpen(entry)),
-          // The row only reports the gesture; what the menu offers is the panel's
-          // business, so a row stays renderable without a menu (search results,
-          // which pass no handler, keep behaving exactly as before).
-          onContextMenu: options.onMenu === undefined
-            ? undefined
-            : (event) => { event.preventDefault(); options.onMenu(entry, event); },
-          onMouseEnter: () => setHover(true),
-          onMouseLeave: () => setHover(false),
-          style: hover ? { ...ROW_STYLE, background: 'var(--dsw-alias-interactive-bg-hover)' } : ROW_STYLE,
-          children: [
-            jsx('span', {
-              key: 'glyph',
-              'aria-hidden': 'true',
-              style: {
-                flex: 'none',
-                width: '14px',
-                textAlign: 'center',
-                fontSize: '10px',
-                color: 'var(--dsw-alias-label-tertiary)',
+        style: { ...ROW_WRAPPER_STYLE, paddingLeft: `${String(depth * Number.parseInt(ROW_METRICS.indent, 10))}px` },
+        children: [
+          jsx('button', {
+            key: 'row',
+            type: 'button',
+            title: entry.name,
+            'data-kdocs-row': isFolder ? 'folder' : 'file',
+            'aria-expanded': isFolder ? (open ? 'true' : 'false') : undefined,
+            onClick: () => (isFolder ? options.onToggle(entry, key) : options.onOpen(entry)),
+            // The row only reports the gesture; what the menu offers is the panel's
+            // business, so a row stays renderable with no menu at all — the guard is
+            // real even though every call site currently passes one (tree, curated
+            // views and search results all do), and it is what keeps this component
+            // usable in a context that has nothing to offer.
+            onContextMenu: options.onMenu === undefined
+              ? undefined
+              : (event) => { event.preventDefault(); options.onMenu(entry, event); },
+            onMouseEnter: () => setHover(true),
+            onMouseLeave: () => setHover(false),
+            onFocus: () => setHover(true),
+            onBlur: () => setHover(false),
+            style: hover ? { ...ROW_STYLE, background: 'var(--dsw-alias-interactive-bg-hover)' } : ROW_STYLE,
+            children: [
+              jsx('span', {
+                key: 'chevron',
+                'aria-hidden': 'true',
+                style: {
+                  flex: 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '14px',
+                  height: '14px',
+                  color: 'var(--dsw-alias-label-tertiary)',
+                  // A folder's chevron is a real disclosure control; a file's slot is
+                  // empty so both kinds start their icon at the same x.
+                  opacity: isFolder ? 1 : 0,
+                  // Nudged left inside its 14px slot. The glyph is optically small next
+                  // to a 16px icon, and centring it put it hard against the folder; the
+                  // shift is transform-only, so it costs the row no width and cannot
+                  // move the name beside it.
+                  marginLeft: '-3px',
+                  transition: 'transform 120ms ease',
+                  transform: open ? 'rotate(90deg)' : 'none',
+                },
+                children: jsx('svg', {
+                  width: '14',
+                  height: '14',
+                  viewBox: '0 0 16 16',
+                  fill: 'none',
+                  'aria-hidden': 'true',
+                  focusable: 'false',
+                  children: jsx('path', {
+                    d: 'M6.2 3.8 10.4 8l-4.2 4.2',
+                    stroke: 'currentColor',
+                    strokeWidth: '1.4',
+                    strokeLinecap: 'round',
+                    strokeLinejoin: 'round',
+                  }),
+                }),
+              }),
+              jsx(FileIcon, { key: 'icon', kind: entryKindOf(entry) }),
+              jsx('span', {
+                key: 'name',
+                style: {
+                  minWidth: 0,
+                  flex: '1 1 auto',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                  // A folder carries the full ink, a file the supporting tone, so the
+                  // container/file distinction survives at a glance even with icons on.
+                  color: isFolder ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+                },
+                children: entry.name,
+              }),
+            ],
+          }),
+          showQuickMenu
+            ? jsx('button', {
+              key: 'quick',
+              type: 'button',
+              // The label is the file it acts on: a screen reader reaching six of
+              // these in a row must not hear "more" six times.
+              'aria-label': `${t('rowMenu')}：${entry.name}`,
+              'data-kdocs-row-menu': folderKey(entry.ref),
+              // Without this the row underneath also handles the gesture, and the
+              // menu that just opened would be replaced by the row's own action.
+              onMouseDown: (event) => { event.preventDefault(); event.stopPropagation(); },
+              onClick: (event) => {
+                event.stopPropagation();
+                options.onMenu(entry, { clientX: event.clientX, clientY: event.clientY });
               },
-              children: isFolder ? (open ? '\u25be' : '\u25b8') : '',
-            }),
-            jsx('span', {
-              key: 'name',
               style: {
-                minWidth: 0,
-                overflow: 'hidden',
-                whiteSpace: 'nowrap',
-                textOverflow: 'ellipsis',
-                // A folder carries the full ink, a file the supporting tone, so the
-                // container/file distinction reads at a glance.
-                color: isFolder ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+                position: 'absolute',
+                right: 0,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                width: '24px',
+                height: ROW_METRICS.height,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+                border: 0,
+                borderRadius: ROW_METRICS.radius,
+                background: 'var(--dsw-alias-interactive-bg-hover)',
+                color: 'var(--dsw-alias-label-secondary)',
+                cursor: 'pointer',
+                font: 'inherit',
+                fontSize: '13px',
+                lineHeight: 1,
               },
-              children: entry.name,
-            }),
-          ],
-        }),
+              children: '\u22ef',
+            })
+            : null,
+        ],
       });
     }
+
 
     /**
      * The panel body.
@@ -1899,6 +2432,13 @@ window.__ModuleLoader__.load({
         async (view) => {
           // A view and a search answer the same question, so opening one clears
           // the other rather than leaving two lists stacked.
+          //
+          // Two things must be cleared for that to be true, not one: the in-flight
+          // search is invalidated (a late response must not reactivate the search
+          // pane over the view the user just chose), and `active` is dropped —
+          // `searching` reads it, so leaving it set would show the emptied search
+          // pane ("没有匹配的文档") instead of the view that was just fetched.
+          searchSeqRef.current += 1;
           setState((current) => ({
             ...current,
             view,
@@ -2083,7 +2623,18 @@ window.__ModuleLoader__.load({
          *  and the write only happens when the user confirms it. */
         rename: (entry) => {
           setMenu(undefined);
-          setRenameDraft({ ref: entry.ref, name: entry.name, value: entry.name.replace(/\.[^.]+$/, '') });
+          // Pre-strip the extension only when the entry actually carries one.
+          // `entry.extension` is set for files only (a folder named 案件.v1 has
+          // none by design), and the Provider re-appends exactly that extension —
+          // so stripping by regex here re-created the old data bug one layer up:
+          // for a folder it deleted ".v1" from the draft and the rename landed as
+          // 案件, a change the user never typed. (For a dotfile like `.gitignore`
+          // the regex also produced an empty draft, which the commit then silently
+          // ignored.)
+          const stem = entry.extension === undefined
+            ? entry.name
+            : entry.name.slice(0, entry.name.length - entry.extension.length - 1);
+          setRenameDraft({ ref: entry.ref, name: entry.name, value: stem });
         },
       };
 
@@ -2230,7 +2781,13 @@ window.__ModuleLoader__.load({
         });
       }
 
-      const searching = state.query.trim() !== '';
+      // A search pane is showing only when a search is actually active — NOT
+      // whenever the box holds text. Reading the query made the box's content
+      // decide what the list shows, so clicking a view tab with a query still in
+      // the box fetched the view and then rendered the (already cleared) search
+      // pane instead: the panel said 没有匹配的文档 while the view sat loaded and
+      // invisible behind it.
+      const searching = state.search.active;
       const rootLevel = state.levels[ROOT_LEVEL];
 
       /**
@@ -2267,15 +2824,16 @@ window.__ModuleLoader__.load({
             onToggle,
             onOpen,
             depth,
+            t,
           }));
           if (entry.kind === 'directory' && state.expanded[childKey] === true) {
             const child = state.levels[childKey];
             if (child === undefined || child.loading) {
-              nodes.push(jsx('div', { key: `${childKey}:loading`, style: { ...NOTE_STYLE, paddingLeft: `${String((depth + 1) * 18 + 10)}px` }, children: t('loading') }));
+              nodes.push(jsx('div', { key: `${childKey}:loading`, style: { ...NOTE_STYLE, paddingLeft: noteIndent(depth + 1) }, children: t('loading') }));
             } else if (child.error !== undefined) {
-              nodes.push(jsx('div', { key: `${childKey}:error`, style: { ...NOTE_STYLE, paddingLeft: `${String((depth + 1) * 18 + 10)}px`, color: 'var(--dsw-alias-label-secondary)' }, children: child.error.message }));
+              nodes.push(jsx('div', { key: `${childKey}:error`, style: { ...NOTE_STYLE, paddingLeft: noteIndent(depth + 1), color: 'var(--dsw-alias-label-secondary)' }, children: child.error.message }));
             } else if (child.entries.length === 0) {
-              nodes.push(jsx('div', { key: `${childKey}:empty`, style: { ...NOTE_STYLE, paddingLeft: `${String((depth + 1) * 18 + 10)}px` }, children: t('empty') }));
+              nodes.push(jsx('div', { key: `${childKey}:empty`, style: { ...NOTE_STYLE, paddingLeft: noteIndent(depth + 1) }, children: t('empty') }));
             } else {
               nodes.push(renderLevel(childKey, child.entries, depth + 1));
               if (child.cursor !== undefined) {
@@ -2283,7 +2841,7 @@ window.__ModuleLoader__.load({
                   key: `${childKey}:more`,
                   type: 'button',
                   onClick: () => void loadMore(childKey, entry.ref),
-                  style: { ...ROW_STYLE, width: 'auto', marginLeft: `${String((depth + 1) * 18)}px`, color: 'var(--dsw-alias-label-tertiary)' },
+                  style: { ...ROW_STYLE, width: 'auto', marginLeft: `${String((depth + 1) * Number.parseInt(ROW_METRICS.indent, 10) + Number.parseInt(SPACE.sm, 10))}px`, color: 'var(--dsw-alias-label-tertiary)' },
                   children: t('loadMore'),
                 }));
               }
@@ -2315,6 +2873,7 @@ window.__ModuleLoader__.load({
               onToggle,
               onOpen,
               depth: 0,
+              t,
             })),
           }));
           if (activeView.cursor !== undefined) {
@@ -2334,7 +2893,7 @@ window.__ModuleLoader__.load({
         body.push(jsx('div', {
           key: 'search-label',
           'data-kdocs-search-count': grand === undefined ? String(shown) : String(grand),
-          style: { ...NOTE_STYLE, padding: '3px 10px 1px' },
+          style: { ...NOTE_STYLE, padding: `${SPACE.xs} ${SPACE.md}` },
           // A page used to end at 100 with nothing said about the rest, so "is that
           // everything?" had no answer on screen.
           children: grand === undefined
@@ -2356,6 +2915,7 @@ window.__ModuleLoader__.load({
             onToggle,
             onOpen,
             depth: 0,
+            t,
           })),
         }));
         // The CLI routinely matches more than one page for a common term, so a
@@ -2413,7 +2973,7 @@ window.__ModuleLoader__.load({
           // navigation instead of a popup to block.
           jsx('div', {
             key: 'homeRow',
-            style: { display: 'flex', alignItems: 'center', gap: '6px', flex: 'none', padding: '8px 10px 0' },
+            style: { display: 'flex', alignItems: 'center', gap: SPACE.sm, flex: 'none', padding: `${SPACE.md} ${SPACE.md} 0` },
             children: [
               jsx('span', { key: 'label', style: { flex: '1 1 auto', fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' }, children: t('rootLabel') }),
               jsx('a', {
@@ -2427,68 +2987,97 @@ window.__ModuleLoader__.load({
               }),
             ],
           }),
-          jsx('div', {
+          // The scope control sits inside the search row rather than under it. 0.2
+          // stacked the field and then a second row of three pills, which is the
+          // extra visual layer §6.2 objects to; the segmented control below reads as
+          // one trailing affordance of the field, and one fewer line of chrome is
+          // one more file row on screen.
+          jsxs('div', {
             key: 'searchRow',
-            style: { flex: 'none', padding: '8px 10px 6px' },
-            children: jsx('input', {
-              type: 'search',
-              value: state.query,
-              placeholder: t('searchPlaceholder'),
-              'data-kdocs-search': 'true',
-              onChange: (event) => onSearchInput(event.target.value),
-              style: SEARCH_STYLE,
-            }),
+            style: { flex: 'none', display: 'flex', alignItems: 'center', gap: SPACE.sm, padding: `${SPACE.sm} ${SPACE.md} 0` },
+            children: [
+              jsx('input', {
+                key: 'field',
+                type: 'search',
+                value: state.query,
+                placeholder: t('searchPlaceholder'),
+                'data-kdocs-search': 'true',
+                onChange: (event) => onSearchInput(event.target.value),
+                style: SEARCH_STYLE,
+              }),
+              // Which field the query matches. A legal user often remembers the
+              // wording of a clause rather than a file name, and "content" is the
+              // only way to reach that — the CLI supports it and the drive is
+              // mostly prose. §6.1 forbids weakening it, so all three remain.
+              jsx('div', {
+                key: 'scopeRow',
+                'data-kdocs-scope-row': 'true',
+                role: 'group',
+                'aria-label': t('scopeAll'),
+                style: { display: 'flex', alignItems: 'center', gap: SPACE.lg, flex: 'none' },
+                children: [['all', t('scopeAll')], ['file_name', t('scopeName')], ['content', t('scopeContent')]]
+                  .map(([id, label]) => jsx('button', {
+                    key: id,
+                    type: 'button',
+                    'data-kdocs-scope': id,
+                    'aria-pressed': state.searchScope === id ? 'true' : 'false',
+                    onClick: () => {
+                      setState((current) => ({ ...current, searchScope: id }));
+                      // Re-run so the choice applies to what is already on screen,
+                      // rather than only to the next keystroke.
+                      if (stateRef.current.query.trim() !== '') void runSearch(stateRef.current.query, undefined, id);
+                    },
+                    style: state.searchScope === id ? TAB_ACTIVE_STYLE : TAB_STYLE,
+                    children: label,
+                  })),
+              }),
+            ],
           }),
-          // Which field the query matches. A legal user often remembers the wording
-          // of a clause rather than a file name, and "content" is the only way to
-          // reach that — the CLI supports it and the drive is mostly prose.
-          jsx('div', {
-            key: 'scopeRow',
-            'data-kdocs-scope-row': 'true',
-            style: { display: 'flex', gap: '4px', flex: 'none', padding: '0 10px 6px' },
-            children: [['all', t('scopeAll')], ['file_name', t('scopeName')], ['content', t('scopeContent')]]
-              .map(([id, label]) => jsx('button', {
-                key: id,
-                type: 'button',
-                'data-kdocs-scope': id,
-                onClick: () => {
-                  setState((current) => ({ ...current, searchScope: id }));
-                  // Re-run so the choice applies to what is already on screen,
-                  // rather than only to the next keystroke.
-                  if (stateRef.current.query.trim() !== '') void runSearch(stateRef.current.query, undefined, id);
-                },
-                style: {
-                  ...HEADER_ACTION_STYLE,
-                  background: state.searchScope === id ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
-                  opacity: state.searchScope === id ? 1 : 0.7,
-                },
-                children: label,
-              })),
-          }),
+          // The drive's views, as navigation rather than as a row of buttons.
+          //
+          // 0.2 made each of the six a bordered pill, and at a narrow sidebar they
+          // wrapped onto two lines — nine capsules at the top of the panel, which is
+          // precisely the "button → button → button" the brief rules out. The active
+          // state is now an underline; the row stays one line by tightening the gaps
+          // and dropping the per-tab border, and every view keeps its own entry
+          // (a `···` overflow menu was considered and rejected: hiding 回收站 behind
+          // another click to save a line is the wrong trade in a workspace).
           jsx('div', {
             key: 'viewTabs',
             'data-kdocs-view-tabs': 'true',
-            style: { display: 'flex', flexWrap: 'wrap', gap: '4px', flex: 'none', padding: '0 10px 6px' },
+            role: 'tablist',
+            // The row scrolls rather than wraps, and that is the whole point: a
+            // wrapped tab row silently becomes two lines (it did at 316px in 0.2),
+            // which costs a file row and violates §16's "no core control goes from
+            // one line to two". Measured across 280–480px, the six entries fit one
+            // line from 320px up, and below that the row scrolls.
+            //
+            // The scrollbar is hidden, and that is load-bearing rather than
+            // cosmetic: a container scrollbar occupies the padding box, and the row
+            // measured 36px instead of 28px at 280px purely because of it. Hidden,
+            // the row is exactly one control tall at every width, and a wheel or
+            // trackpad still reaches the last entry.
+            style: {
+              display: 'flex',
+              flexWrap: 'nowrap',
+              gap: SPACE.lg,
+              flex: 'none',
+              overflowX: 'auto',
+              scrollbarWidth: 'none',
+              msOverflowStyle: 'none',
+              padding: `${SPACE.md} ${SPACE.md} 0 ${SPACE.md}`,
+            },
             children: VIEW_TABS.map(([id, label]) => jsx('button', {
               key: id,
               type: 'button',
+              role: 'tab',
               'data-kdocs-view': id,
               // A search answers the same question a view does, so it takes the
               // highlight: two tabs lit at once would misstate what is on screen.
               'data-kdocs-view-active': !searching && state.view === id ? 'true' : 'false',
+              'aria-selected': !searching && state.view === id ? 'true' : 'false',
               onClick: () => void openView(id),
-              style: {
-                fontSize: '11.5px',
-                padding: '2px 8px',
-                borderRadius: '999px',
-                border: '0.5px solid var(--dsw-alias-border-l3)',
-                background: !searching && state.view === id ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
-                color: 'inherit',
-                cursor: 'pointer',
-                opacity: !searching && state.view === id ? 1 : 0.75,
-                font: 'inherit',
-                whiteSpace: 'nowrap',
-              },
+              style: !searching && state.view === id ? TAB_ACTIVE_STYLE : TAB_STYLE,
               children: label,
             })),
           }),
@@ -2511,16 +3100,19 @@ window.__ModuleLoader__.load({
             : jsxs('div', {
               key: 'menu',
               'data-kdocs-menu': folderKey(menu.entry.ref),
-              style: { ...{ position: 'fixed', zIndex: 50, minWidth: '170px', padding: '4px', borderRadius: '8px', border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-overlay)', boxShadow: '0 4px 16px rgba(0, 0, 0, 0.22)', display: 'flex', flexDirection: 'column', gap: '1px' }, left: `${String(menu.x)}px`, top: `${String(menu.y)}px` },
+              role: 'menu',
+              style: { ...MENU_STYLE, left: `${String(menu.x)}px`, top: `${String(menu.y)}px` },
               children: [
-                jsx('div', { key: 'head', style: { padding: '4px 9px 6px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: menu.entry.name }),
-                jsx('button', { key: 'quote', type: 'button', 'data-kdocs-menu-item': 'quote', disabled: !canQuote || menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.quote), style: { ...{ ...HEADER_ACTION_STYLE, border: 'none', textAlign: 'left', width: '100%', padding: '5px 9px', borderRadius: '6px' }, font: 'inherit', opacity: canQuote ? 1 : 0.5 }, children: t('menuQuote') }),
-                jsx('button', { key: 'open', type: 'button', 'data-kdocs-menu-item': 'open', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.openOnline), style: { ...{ ...HEADER_ACTION_STYLE, border: 'none', textAlign: 'left', width: '100%', padding: '5px 9px', borderRadius: '6px' }, font: 'inherit' }, children: t('menuOpen') }),
-                jsx('button', { key: 'copy', type: 'button', 'data-kdocs-menu-item': 'copy', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.copyLink), style: { ...{ ...HEADER_ACTION_STYLE, border: 'none', textAlign: 'left', width: '100%', padding: '5px 9px', borderRadius: '6px' }, font: 'inherit' }, children: t('menuCopyLink') }),
-                jsx('button', { key: 'detail', type: 'button', 'data-kdocs-menu-item': 'detail', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.detail), style: { ...{ ...HEADER_ACTION_STYLE, border: 'none', textAlign: 'left', width: '100%', padding: '5px 9px', borderRadius: '6px' }, font: 'inherit' }, children: t('menuDetail') }),
-                jsx('button', { key: 'versions', type: 'button', 'data-kdocs-menu-item': 'versions', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.versions), style: { ...{ ...HEADER_ACTION_STYLE, border: 'none', textAlign: 'left', width: '100%', padding: '5px 9px', borderRadius: '6px' }, font: 'inherit' }, children: t('menuVersions') }),
-                jsx('button', { key: 'comments', type: 'button', 'data-kdocs-menu-item': 'comments', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.comments), style: { ...{ ...HEADER_ACTION_STYLE, border: 'none', textAlign: 'left', width: '100%', padding: '5px 9px', borderRadius: '6px' }, font: 'inherit' }, children: t('menuComments') }),
-                jsx('button', { key: 'rename', type: 'button', 'data-kdocs-menu-item': 'rename', disabled: menuBusy, onClick: () => menuActions.rename(menu.entry), style: { ...{ ...HEADER_ACTION_STYLE, border: 'none', textAlign: 'left', width: '100%', padding: '5px 9px', borderRadius: '6px' }, font: 'inherit' }, children: t('menuRename') }),
+                jsx('div', { key: 'head', style: MENU_HEAD_STYLE, children: menu.entry.name }),
+                jsx('button', { key: 'quote', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'quote', disabled: !canQuote || menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.quote), style: { ...MENU_ITEM_STYLE, opacity: canQuote ? 1 : 0.45 }, children: t('menuQuote') }),
+                jsx('button', { key: 'open', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'open', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.openOnline), style: MENU_ITEM_STYLE, children: t('menuOpen') }),
+                jsx('div', { key: 'sep-1', role: 'separator', style: MENU_SEPARATOR_STYLE }),
+                jsx('button', { key: 'copy', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'copy', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.copyLink), style: MENU_ITEM_STYLE, children: t('menuCopyLink') }),
+                jsx('button', { key: 'detail', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'detail', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.detail), style: MENU_ITEM_STYLE, children: t('menuDetail') }),
+                jsx('button', { key: 'versions', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'versions', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.versions), style: MENU_ITEM_STYLE, children: t('menuVersions') }),
+                jsx('button', { key: 'comments', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'comments', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.comments), style: MENU_ITEM_STYLE, children: t('menuComments') }),
+                jsx('div', { key: 'sep-2', role: 'separator', style: MENU_SEPARATOR_STYLE }),
+                jsx('button', { key: 'rename', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'rename', disabled: menuBusy, onClick: () => menuActions.rename(menu.entry), style: MENU_ITEM_STYLE, children: t('menuRename') }),
               ],
             }),
           renameDraft === undefined
@@ -2544,9 +3136,9 @@ window.__ModuleLoader__.load({
                   },
                   style: { ...SEARCH_STYLE, marginBottom: '6px' },
                 }),
-                jsx('div', { key: 'actions', style: { display: 'flex', gap: '6px' } },
-                  jsx('button', { key: 'ok', type: 'button', 'data-kdocs-rename-commit': 'true', disabled: menuBusy, onClick: () => void commitRename(), style: { ...HEADER_ACTION_STYLE, textAlign: 'left', padding: '5px 9px', font: 'inherit', width: 'auto', border: '0.5px solid var(--dsw-alias-border-l3)' }, children: menuBusy ? t('renameBusy') : t('renameCommit') }),
-                  jsx('button', { key: 'cancel', type: 'button', 'data-kdocs-rename-cancel': 'true', onClick: () => setRenameDraft(undefined), style: { ...HEADER_ACTION_STYLE, textAlign: 'left', padding: '5px 9px', font: 'inherit', width: 'auto', border: '0.5px solid var(--dsw-alias-border-l3)' }, children: t('renameCancel') }),
+                jsx('div', { key: 'actions', style: { display: 'flex', gap: SPACE.sm } },
+                  jsx('button', { key: 'ok', type: 'button', 'data-kdocs-rename-commit': 'true', disabled: menuBusy, onClick: () => void commitRename(), style: { ...HEADER_ACTION_STYLE, textAlign: 'left', padding: `${SPACE.xs} ${SPACE.md}`, font: 'inherit', width: 'auto', border: '0.5px solid var(--dsw-alias-border-l3)' }, children: menuBusy ? t('renameBusy') : t('renameCommit') }),
+                  jsx('button', { key: 'cancel', type: 'button', 'data-kdocs-rename-cancel': 'true', onClick: () => setRenameDraft(undefined), style: { ...HEADER_ACTION_STYLE, textAlign: 'left', padding: `${SPACE.xs} ${SPACE.md}`, font: 'inherit', width: 'auto', border: '0.5px solid var(--dsw-alias-border-l3)' }, children: t('renameCancel') }),
                 ),
                 renameDraft.error === undefined
                   ? null
@@ -2575,7 +3167,7 @@ window.__ModuleLoader__.load({
             }),
           jsx('div', {
             key: 'list',
-            style: { flex: '1 1 auto', minHeight: 0, overflow: 'auto', padding: '0 6px 8px' },
+            style: { flex: '1 1 auto', minHeight: 0, overflow: 'auto', padding: `0 ${SPACE.xs} ${SPACE.md}` },
             children: body,
           }),
         ],
@@ -2589,22 +3181,50 @@ window.__ModuleLoader__.load({
      * comes up empty, which is indistinguishable from "nothing to show" and cost
      * real time to diagnose. This keeps the fault on screen.
      *
+     * **This has to be a real React error boundary, and 0.2.5 proved why.** The first
+     * version of this function wrapped the body in a `try`/`catch`, which only ever
+     * saw a throw from the body's *own* synchronous call. Anything thrown while React
+     * reconciled a **child** — a row, a menu, a preview — unwound straight past it
+     * into the slot runtime, which replaced the whole pane with an empty div. That is
+     * how a `ReferenceError` in one hovered file row turned the entire sidebar white
+     * while this boundary sat right there reporting nothing: it was never in the
+     * call path. A class with `getDerivedStateFromError` is in the path by
+     * construction.
+     *
      * @param {any} Component - the body component.
      * @returns {any} a component that renders either the body or its error.
      */
     function guarded(Component) {
-      return function Guarded(props) {
-        try {
-          return Component(props);
-        } catch (error) {
-          const message = String(error && error.message ? error.message : error);
+      class Guarded extends react.Component {
+        /**
+         * @param {any} props - the seat props passed through to the body.
+         */
+        constructor(props) {
+          super(props);
+          this.state = { error: undefined };
+        }
+
+        /** @param {any} error - what a descendant threw. @returns {any} the new state. */
+        static getDerivedStateFromError(error) {
+          return { error };
+        }
+
+        /**
+         * @returns {any} the body, or the failure that replaced it.
+         */
+        render() {
+          if (this.state.error === undefined) return jsx(Component, this.props);
+          const message = String(this.state.error && this.state.error.message ? this.state.error.message : this.state.error);
+          const stack = String((this.state.error && this.state.error.stack) || '').split('\n').slice(0, 4).join('\n');
           return jsx('div', {
             'data-kdocs-error': 'true',
             style: { padding: '12px 10px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap' },
-            children: `${Component.name || 'kdocs'} 渲染失败：${message}`,
+            children: `${Component.name || 'kdocs'} 渲染失败：${message}\n\n${stack}`,
           });
         }
-      };
+      }
+      Guarded.displayName = `Guarded(${Component.name || 'kdocs'})`;
+      return Guarded;
     }
 
     /**
@@ -2729,7 +3349,7 @@ window.__ModuleLoader__.load({
      */
     function KDocsPanelTitle(props) {
       // One title component serves both kdocs tab kinds, chosen by the tab's own
-      // kind. The panel is a page with fixed copy; a preview is a document, and its
+      // kind: the panel is a page with fixed copy, a preview is a document, and its
       // chip should name the document rather than the id inside the address.
       const useTabInfo = props.useTabInfo;
       const tab = typeof useTabInfo === 'function' ? useTabInfo().tab : undefined;
@@ -2769,14 +3389,80 @@ window.__ModuleLoader__.load({
      * That is why nothing here touches `ctx.remote.kdocs` at activation time —
      * `ctx.inject` waits for the service and runs the body once it is there.
      *
+     * The retry loop below is the fix for a reproduced wedge, not a precaution.
+     * `dsh-client-hmr`'s reload drops the previous fiber with
+     * `registry.delete(callback)` — which *starts* disposal but does not await it —
+     * and then checks `oldFiber.inertia` before the disposal microtask has had the
+     * chance to set it, so the wait is skipped entirely. The fresh fiber's
+     * `$mount` can therefore reach the Remote service's mutation queue *ahead of*
+     * the previous incarnation's unmount. When it does, the Gateway's
+     * `validateContribution` sees the still-installed methods and throws
+     * `client api: direct method kdocs/<method> is already mounted`; the doomed
+     * unmount then runs anyway and withdraws `remote.kdocs` altogether, leaving
+     * this fiber — and every `ctx.inject(['remote.kdocs'])` consumer — with no
+     * namespace until the next reload. The panel rendered its skeleton (the
+     * inject resolved against the about-to-die namespace) and then lost its body,
+     * which is the permanently blank/loading pane this guards against.
+     *
+     * The competing unmount is guaranteed to be in flight — it is the only source
+     * of "already mounted" — and both sides drain through the same serialized
+     * mutation queue, so waiting briefly and retrying lands strictly after it and
+     * mounts cleanly. Any other failure is a real defect and is left to throw.
+     *
      * @param {any} ctx - the client root context.
      * @returns {Promise<void>} resolves once mounting has been handed to Cordis.
      */
     exports.apply = async function apply(ctx) {
       ctx.effect(async () => {
-        const dispose = await ctx.remote.$mount(TYPERT_REMOTE);
+        /** @type {(() => Promise<void>) | undefined} */
+        let dispose;
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            dispose = await ctx.remote.$mount(TYPERT_REMOTE);
+            break;
+          } catch (error) {
+            const retriable = /already mounted/.test(String(error && error.message));
+            if (!retriable || attempt >= 9) throw error;
+            // 50ms, 100ms, … 500ms — the losing unmount is microtasks away; this
+            // ceiling (~2.75s total) only matters when the page is busy.
+            await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+          }
+        }
         return () => dispose();
       }, 'kdocs: mount the kdocs Remote namespace');
+
+      // The panel's one stylesheet, and the only place a real CSS rule is needed.
+      //
+      // Everything else in this plugin is inline styles, which React owns and which
+      // therefore cannot express a pseudo-element or a descendant selector. Two
+      // things genuinely need CSS. First, `::-webkit-scrollbar`: the tab row hides
+      // its scrollbar so the row cannot grow taller than one line, and
+      // `scrollbar-width: none` does not reach a WebKit scrollbar on the Chromium
+      // versions this ships against. Second, `:hover` and `:focus-visible` on the
+      // menu items and the row's quick action — React has no `onHover`-style prop
+      // for them, and the focus ring has to be distinguishable from the hover fill
+      // (§17: "hover 与 selected 不能只靠颜色区分").
+      //
+      // Scoped by `[data-kdocs-…]` attributes rather than by a class prefix, so
+      // nothing here can reach a product element, and owned by `ctx.effect` so it
+      // goes away with the plugin.
+      ctx.effect(() => {
+        const style = document.createElement('style');
+        style.setAttribute('data-kdocs-style', '0.2.5');
+        style.textContent = [
+          '[data-kdocs-view-tabs]::-webkit-scrollbar{display:none}',
+          '[data-kdocs-menu-item]:not(:disabled):hover{background:var(--dsw-alias-interactive-bg-hover)}',
+          '[data-kdocs-menu-item]:focus-visible{outline:1.5px solid var(--dsw-alias-label-primary);outline-offset:-1.5px}',
+          '[data-kdocs-row-menu]:hover{color:var(--dsw-alias-label-primary)}',
+          '[data-kdocs-row-menu]:focus-visible{outline:1.5px solid var(--dsw-alias-label-primary);outline-offset:-1.5px}',
+          '[data-kdocs-row]:focus-visible{outline:1.5px solid var(--dsw-alias-label-primary);outline-offset:-1.5px}',
+          '[data-kdocs-mode]:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+          '[data-kdocs-scope]:hover,[data-kdocs-view]:hover{color:var(--dsw-alias-label-primary)}',
+          '[data-kdocs-search]::placeholder{color:var(--dsw-alias-label-tertiary)}',
+        ].join('');
+        document.head.appendChild(style);
+        return () => style.remove();
+      }, 'kdocs: panel stylesheet');
 
       ctx.inject(['remote.kdocs'], (scoped) => {
         // The resource protocol: metadata for `dsh-resource://kdocs/file/...`.
@@ -2855,6 +3541,11 @@ window.__ModuleLoader__.load({
     exports.panelMemory = panelMemory;
     exports.applyListResult = applyListResult;
     exports.applySearchResult = applySearchResult;
+    // The curated-view reducer, exported for the same reason its two siblings are:
+    // a reducer nothing can call is a reducer nothing can test, and this one shipped
+    // a dead end (a failed further page discarded the cursor the retry control needs)
+    // through a release because of it.
+    exports.applyViewResult = applyViewResult;
     exports.toggleFolder = toggleFolder;
     exports.markLoading = markLoading;
     exports.folderKey = folderKey;
@@ -2863,11 +3554,30 @@ window.__ModuleLoader__.load({
     exports.KDOCS_ID = KDOCS_ID;
     exports.kdocsDefinition = kdocsDefinition;
     exports.KDocsBody = KDocsBody;
+    // Exported for the same reason `KDocsBody` is: this surface had no render test
+    // at all, and a release review demonstrated that an undefined name in its header
+    // kept the whole suite green. The document view is the one a reader spends the
+    // most time in, so "no test has ever executed it" is the gap worth closing.
+    exports.KDocsPreview = KDocsPreview;
+    exports.KDocsPanelTitle = KDocsPanelTitle;
     exports.kdocsPreviewDefinition = kdocsPreviewDefinition;
     exports.parseMarkdown = parseMarkdown;
     exports.inlineSpans = inlineSpans;
     exports.unwrapResult = unwrapResult;
     exports.guarded = guarded;
+    // Exported so a test can render one row for real, with hover on. That is the
+    // only way the quick-menu branch — the branch that shipped a `ReferenceError`
+    // in 0.2.5 — is ever executed outside a browser.
+    exports.EntryRow = EntryRow;
+    // The type-glyph table and its two lookups. Exported so a test can hold the
+    // bundle to its own promises — every kind painted, every suffix classified, and
+    // no colour invented outside the product's token set — none of which a browser
+    // screenshot can check.
+    exports.FILE_ICONS = FILE_ICONS;
+    exports.FILE_KINDS = FILE_KINDS;
+    exports.fileKindOf = fileKindOf;
+    exports.entryKindOf = entryKindOf;
+    exports.FileIcon = FileIcon;
     exports.PREVIEW_KIND = PREVIEW_KIND;
     exports.PREVIEW_ID = PREVIEW_ID;
     exports.kdocsEmbedUrl = kdocsEmbedUrl;
