@@ -1,6 +1,6 @@
 {
   "name": "dsh-kdocs-inside",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "金山文档 (KDocs) for DeepSeek Harness — browse, preview and quote documents from the right sidebar, with four read-only Agent tools backed by the official kdocs-cli",
   "type": "module",
   "main": "./src/index.js",

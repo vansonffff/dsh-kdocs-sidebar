@@ -1,6 +1,6 @@
 {
   "name": "kdocs-settings",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "金山文档 (kdocs) status panel for DeepSeek Harness — shows whether kdocs-cli is installed and signed in, and nothing else",
   "type": "module",
   "main": "./dist/index.mjs",
