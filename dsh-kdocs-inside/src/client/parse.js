@@ -110,8 +110,8 @@ export function toEntry(item, fallbackDriveId) {
   };
 
   // Only files have extensions. A folder may legitimately contain dots
-  // (`案件.v1`), and treating the tail as a suffix made `rename` append it back:
-  // the user confirmed `案件归档` and the drive got `案件归档.v1`.
+  // (`archive.v1`), and treating the tail as a suffix made `rename` append it
+  // back: the user confirmed `archive` and the drive got `archive.v1`.
   const extension = kind === 'file' ? extensionOf(name) : undefined;
   if (extension !== undefined) entry.extension = extension;
 

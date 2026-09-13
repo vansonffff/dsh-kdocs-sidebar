@@ -1,17 +1,7 @@
 {
   "name": "kdocs-settings",
-  "version": "0.1.1",
-  "description": "金山文档 (kdocs) settings section for DeepSeek Harness",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/vansonffff/dsh-kdocs.git",
-    "directory": "kdocs-settings"
-  },
-  "homepage": "https://github.com/vansonffff/dsh-kdocs#readme",
-  "bugs": {
-    "url": "https://github.com/vansonffff/dsh-kdocs/issues"
-  },
-  "author": "vansonffff",
+  "version": "0.2.0",
+  "description": "金山文档 (kdocs) status panel for DeepSeek Harness — shows whether kdocs-cli is installed and signed in, and nothing else",
   "type": "module",
   "main": "./dist/index.mjs",
   "exports": {
@@ -28,6 +18,9 @@
     "cordis.patch.yml",
     "README.md"
   ],
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -40,14 +33,14 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "license": "MIT",
-  "keywords": [
-    "dsh",
-    "deepseek-harness",
-    "cordis-plugin",
-    "kdocs",
-    "wps",
-    "金山文档",
-    "settings"
-  ]
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vansonffff/dsh-kdocs.git",
+    "directory": "kdocs-settings"
+  },
+  "homepage": "https://github.com/vansonffff/dsh-kdocs#readme",
+  "bugs": {
+    "url": "https://github.com/vansonffff/dsh-kdocs/issues"
+  },
+  "license": "MIT"
 }

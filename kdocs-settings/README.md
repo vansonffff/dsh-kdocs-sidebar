@@ -1,88 +1,139 @@
-# kdocs-settings — 金山文档设置分区 for DeepSeek Harness
+# kdocs-settings
 
-> 在 DSH 设置页里加一个「金山文档 (kdocs)」分区：**OAuth 登录 / 刷新状态 / 退出登录**，
-> 以及可选的「粘贴 API Token」。不用回终端就能完成授权。
+DeepSeek Harness 的可选插件：在 DSH 设置页加一个「金山文档 (kdocs)」**只读状态分区**。
 
-**版本 0.1.1** · 需要 DSH ≥ `0.1.5-rc.1` · Node ≥ 22.19 · [MIT](LICENSE)
+**当前版本 v0.2.0** · 需要 DSH ≥ `0.1.5`（实测于 `0.1.5-rc.1`）· Node ≥ 22.19
+
+它是 [`dsh-kdocs-inside`](../kdocs/README.md) 的**可选**配套插件。不装它，右栏、预览、引用和
+Agent 工具都不受影响。
 
 ---
 
 ## 它做什么
 
-| 面板元素 | 行为 |
+只做一件事：显示核心插件上报的状态。
+
+| 显示项 | 来源 |
 |---|---|
-| 状态徽标 | 「已认证 / 未认证」——只要 `kdocs-cli` 报告有效凭据就显示已认证 |
-| **OAuth 登录** | 在你的机器上执行 `kdocs-cli auth login`，把打印出来的授权链接用默认浏览器打开 |
-| **刷新状态** | 重新读取 DSH 凭据面里这两个 ref 的配置状态（**不含**重新探测 CLI，见「已知限制」） |
-| **退出登录** | 清除 `KDOCS_TOKEN`，并执行 `kdocs-cli auth logout`（从系统钥匙串移除 Token） |
-| 粘贴 API Token | 可选的兜底登录方式；Token 以 **stdin** 交给 `kdocs-cli auth set-token -`，永不进 argv |
+| CLI 是否安装 | `KDocsStatus.cliAvailable` |
+| 是否已登录 | `KDocsStatus.authenticated` |
+| CLI 版本 | `KDocsStatus.cliVersion` |
+| CLI 路径 | `KDocsStatus.cliPath` |
+| 凭据来源 | `KDocsStatus.source`（如 `keychain`） |
+| 系统钥匙串后端 | `KDocsStatus.keychainBackend` |
+| 上次检查时间 | `KDocsStatus.checkedAt` |
+| 失败原因 | 传输层错误，或 `KDocsStatus.reason` |
+| 「刷新状态」按钮 | 再调一次 `remote.kdocs.status()` |
 
-它只做**凭据这一件事**：云盘的浏览、预览、引用与 Agent 工具在
-[`dsh-kdocs-inside`](../dsh-kdocs-inside) 里。两者可以各自单独安装。
+状态有四种，界面上互不混淆：
 
-## 前置条件
+| 状态 | 判定 |
+|---|---|
+| 检查中 | 首次请求尚未返回 |
+| CLI 未安装 | `cliAvailable === false`，并提示去装 CLI |
+| 未登录 | CLI 可用但 `authenticated === false`，并给出 `kdocs-cli auth login` |
+| 已登录 | `authenticated === true` |
+| 检查失败 | 传输层或 Remote 调用失败（**不会**退化成"未登录"） |
 
-和主插件一样：**先有金山官方的 `kdocs-cli`**。
+## 它不做什么
 
-- 安装：官方仓库 [kdocs-app/kdocs-skill](https://github.com/kdocs-app/kdocs-skill) 的
-  `scripts/setup.sh`（macOS/Linux）/ `setup.ps1`（Windows）/ `setup.cjs`（Node）
-- 自检：`kdocs-cli auth status` → `"authenticated": true`
+这一版（0.2.0）把它从"认证管理器"收缩成了"状态面板"：
 
-本插件**不携带** `kdocs-cli`，也不自己存 Token —— Token 属于系统钥匙串，由 CLI 管理。
+- **不发 OAuth 登录**；
+- **不接收、不保存 Token**（`package.json` 里连凭据面依赖都没有）；
+- **不执行退出登录**；
+- **不读写 DSH Credentials**；
+- **不自己探测或执行 `kdocs-cli`** —— 整套 CLI 访问只有一份，在 `dsh-kdocs-inside` 里。
 
-> 如果你已经在终端里登录过，这个插件就是**可选**的：它只是把同一件事搬到设置页。
+需要登录、退出或换 Token，请在终端完成：
+
+```bash
+kdocs-cli auth login
+kdocs-cli auth logout
+kdocs-cli auth set-token -     # Token 走 stdin
+```
+
+## 数据从哪来
+
+```text
+kdocs-settings (client)
+    ↓  remote.kdocs.status()
+KDocsService
+    ↓
+KDocsCliProvider
+    ↓  kdocs-cli auth status
+```
+
+Settings 不知道 CLI 叫什么、装在哪、怎么认证、输出长什么样。它只渲染 `KDocsStatus`。
+**这也是这个包没有 host 半边的原因**：`dist/index.mjs` 只导出一个空的 `apply()`。
+
+因为状态由核心 Provider 采集，而它默认缓存约 10 秒（`statusTtlMs`），所以：
+
+- 「刷新状态」按钮**不保证**会重新执行 CLI；
+- 连续点击刷新时，「上次检查」时间**不一定变化**，这是正常行为；
+- 本版本没有"强制绕过缓存"的接口。
+
+## 权限说明
+
+状态面板本身没有任何写入能力：它只调 `remote.kdocs.status()`，一个只读方法。
+
+需要分清的是两层：
+
+- **插件层** —— `kdocs-settings` 只显示状态；核心插件的 4 个 Agent 工具也全部只读，
+  不会创建、编辑或删除文档正文。
+- **`kdocs-cli` / Agent 运行环境层** —— CLI 本身具备写入能力（创建、上传、修改、移动等）。
+  如果 Agent 有权执行命令，它可以直接调用 CLI，而不经过这些只读工具。
+
+也就是说，这两个插件都**不主动**向 Agent 暴露写入工具，但它们不是、也无法作为安全沙箱。
+完整的权限说明见仓库根目录的 [`README.md`](../README.md)（npm 页面上该相对链接不可用，
+请到仓库查看）。
 
 ## 安装
 
-```bash
-# 从 npm
+```sh
 dsh plugin --profile web add kdocs-settings
-
-# 或本地源码（在本包目录里）
-dsh plugin --profile web add link:$PWD
-
-dsh web
 ```
 
-**装完必须重启 `dsh web`。** host 半边在装配时定死，只刷新浏览器不生效。
+然后**重启 `dsh web`**，并重新加载页面。分区出现在设置页，顺序值 `order: 35`。
 
 卸载：
 
-```bash
+```sh
 dsh plugin --profile web remove kdocs-settings
 ```
 
-> 卸载后请**硬刷新浏览器**：已打开的页面会把前端模块留在内存里，重启服务端不会把它卸掉。
+## 依赖关系
 
-## 安全模型
+Settings 依赖核心插件提供的 `remote.kdocs` 命名空间服务。客户端半边用
+`ctx.inject(['remote.kdocs'], …)` 等它出现，所以：
 
-- **Token 永不进入 argv**：`auth set-token` 从 stdin 读取（命令行参数对本机任何进程可见，
-  官方文档也明确禁止 Token 出现在命令行、日志或文件里）。
-- **Token 永不回读**：DSH 的凭据面只回答"某个 ref 是否已配置"（`describe()` 从不返回值），
-  所以这个面板显示不了 Token 内容 —— 这是设计，不是缺陷。
-- **插件自己不落盘 Token**：所有写入都交给 `kdocs-cli`，由它存进系统钥匙串。
+- **两个都装了** → 分区正常显示；
+- **只装 Settings、没装核心插件** → 什么也不显示（不会报错、不会自己调 CLI）。
 
-## 已知限制：刷新状态按钮
+静态 `exports.inject` 只声明 `['slots', 'remote']`。`remote.kdocs` 是**命名空间服务**，
+在 `apply` 里用 `ctx.inject` 等待它，这是本机实测过的写法（核心插件的客户端与
+`dsh-apple-calendar` 同样如此），也能保证"只装 Settings"时不至于启动失败。
 
-「刷新状态」重新读取的是 **DSH 凭据面里的 ref**（一次 `credentials.describe`），
-它**不会**重新执行 `kdocs-cli auth status`。因此：
+## 测试
 
-- 状态没变化时点它，界面不会有任何变化 —— 这是正常的，不是按钮坏了；
-- 权威的 CLI 探测发生在 **DSH 启动后约 3 秒**、以及**每次登录结束时**；
-- 后果：如果 Token 在别处失效（过期、被踢下线），徽标可能仍显示「已认证」，
-  直到你重新登录、改 Token 或重启 DSH。
+```sh
+node --test "test/*.test.mjs"
+```
 
-> 本版本实测确认：点击该按钮会发出且仅发出一次 `POST /api/credentials/describe`，
-> 宿主侧的凭据文件不会被改写（即没有触碰 CLI）。
+- `test/panel.test.mjs` —— 把 `dist/client.js` 当真脚本加载，注册进一个迷你 React 运行时，
+  用替身 `remote.kdocs` 渲染四种状态，并驱动刷新按钮。还断言了"只读"这件事本身：
+  面板里只能有一个按钮、没有输入框、不出现任何凭据引用、不出现第二个 CLI runner。
+- `test/host.test.mjs` —— 断言 host 半边**没有任何副作用**：不 import、不开子进程、
+  不读文件、不设 timer、不碰凭据；组合行也不声明 `inject`。
 
-## 与 DSH 版本的兼容性
+两个文件都做过负向对照：把 0.1.x 的凭据面重新塞回去，它们会失败。
 
-- 0.1.1 适配 DSH `0.1.5-rc.1` 的 `remote.credentials` 命名空间服务。
-- 0.1.0 用的是已经消失的 `ctx.get("connection").api.credentials`，在 0.1.5 上会**静默失效**
-  （面板报 `Cannot read properties of undefined (reading 'credentials')`，按钮点了没反应）。
-  请使用 0.1.1 或更高版本。
-- DSH 客户端接口仍在 RC 通道，升级 DSH 后如遇异常，请附上浏览器控制台报错提 issue。
+## 布局
+
+- `dist/index.mjs` —— host 半边（空的 `apply()`，见上文）。
+- `dist/client.js` —— 浏览器半边，`window.__ModuleLoader__` 格式，手写产物、无构建步骤。
+- `cordis.patch.yml` —— 组合插入行。
 
 ## License
 
-[MIT](LICENSE)
+与核心插件一致。

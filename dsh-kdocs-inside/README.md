@@ -308,15 +308,12 @@ dsh plugin --profile web remove dsh-kdocs-inside
 
 ## 测试
 
-```sh
-node --test test/*.test.js          # 全部；需要账号的检查在没有凭据时 skip
-npm run test:live                   # 真实账号门禁：缺账号是 FAILURE，不是 skip
-```
+本包以**发布镜像**的形式托管：仓库里只有插件本体（`client.js`、`src/`、配置与文档），
+**不含测试套件与开发过程记录** —— 它们留在开发工作区，不随包、也不随仓库发布。
 
-`test/tool-contract.test.js` 与 `test/tools-runtime.test.js` 专门盯住上面那份输出契约：
-前者用 DSH 自己的 `validateJsonSchemaValue`，后者把工具装进真实的 `ToolRuntime` 跑一遍 ——
-因为 schema 与实际返回值不一致时，模型收到的是 `INVALID_TOOL_OUTPUT` 错误，
-而不是一条列表。两者的负向对照都验过。
+如果你要在本地验证这个插件，最直接的方式是把它装进一个 DSH profile，
+然后在右栏打开「金山文档」面板：面板能列出你的云盘，就说明 CLI、凭据、
+资源协议与 Host 半边这条链路都是通的。
 
 ---
 
@@ -326,8 +323,7 @@ npm run test:live                   # 真实账号门禁：缺账号是 FAILURE�
   等），DSH 升级到新 RC 时可能需要同步更新。升级 DSH 前，建议先在另一个 profile 里验证。
 - 依赖面全部公开可解析：`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-typert-protocol`
   （`^0.1.5-rc.1`）。
-- 开发与实测记录（架构取舍、踩过的坑、真机验证过的事实）在源码仓库的 `DEVELOPMENT.md` 里；
-  它记录的是本机实测环境，**不随 npm 包发布**。
+- 版本变动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## License
 

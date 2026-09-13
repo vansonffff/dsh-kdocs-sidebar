@@ -1,4 +1,17 @@
+# kdocs-settings bundle patch — inserts the status panel into a DSH profile.
+#
+# Since 0.2.0 this package is client-only and reads nothing from the Host: the
+# section calls `remote.kdocs.status()` and renders what the core plugin's
+# Provider reports. It therefore declares **no** `inject` — in particular no
+# `credentials`, which it used to require in order to read and write the
+# KDOCS_TOKEN / KDOCS_AUTH_LOGIN / KDOCS_AUTH_STATUS refs.
+#
+# One consequence worth knowing when reading a profile dump: with nothing to
+# inject, this row activates immediately and its (empty) Host half is a no-op.
+# The panel appears once the core plugin's `remote.kdocs` namespace is mounted,
+# because the client half parks on that service rather than reading it at
+# activation time — see `dist/client.js`.
+
 - insert:
     - id: kdocs-settings
       name: kdocs-settings
-      inject: [credentials]

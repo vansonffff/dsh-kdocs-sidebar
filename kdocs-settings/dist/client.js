@@ -1,13 +1,26 @@
-// kdocs-settings web client — settings.section entry for 金山文档 (kdocs).
+// kdocs-settings web client — the 金山文档 (kdocs) status panel.
 //
-// DSH 0.1.5 contract:
-//   * credential reads/writes go through the `remote.credentials` namespace
-//     service: describe([refs]) -> {ok,value:{ref:{configured,source?,writable}}},
-//     set(ref, value), unset(ref). The pre-0.1.5 face
-//     (`ctx.get("connection").api.credentials`) no longer exists — every read
-//     threw "Cannot read properties of undefined (reading 'credentials')".
-//   * the host's credential-change event is forwarded to the browser as
-//     `credentials/reference-updated`, consumed with remote.$on.
+// Since 0.2.0 this section is a *status-only* view. It renders whatever the core
+// plugin's Provider reports through `remote.kdocs.status()` and offers one
+// button that calls the same method again. It deliberately has no login button,
+// no Token field and no logout button:
+//
+//   * the panel used to read and write DSH Credentials refs (KDOCS_TOKEN,
+//     KDOCS_AUTH_LOGIN, KDOCS_AUTH_STATUS) and to run its own copy of
+//     `kdocs-cli`. Two implementations of the same CLI meant two sets of bugs,
+//     and "a Token is configured" was rendered as "authenticated" — which is not
+//     the same claim and was wrong whenever the Token had expired.
+//   * credentials live in the OS keychain, owned by `kdocs-cli`. Browser OAuth
+//     belongs to the terminal (`kdocs-cli auth login`), where its output and its
+//     failure modes are visible.
+//
+// DSH client contract that matters here:
+//   * a Remote namespace is a *service* named `remote.<namespace>`, so the panel
+//     parks on `ctx.inject(['remote.kdocs'], …)` rather than reading
+//     `ctx.remote.kdocs` at activation time — an uninjected read poisons the
+//     context permanently (`cannot get property "remote.kdocs" without inject`).
+//   * every call answers `{ok:true,value}` or `{ok:false,error}`; the business
+//     value is one level in.
 window.__ModuleLoader__.load({
 	id: "kdocs-settings",
 	factory: (require) => {
@@ -17,15 +30,21 @@ window.__ModuleLoader__.load({
 		let react = require("react");
 		let jsxRuntime = require("react/jsx-runtime");
 
-		const { useState, useCallback, useEffect, useRef, Component } = react;
+		const { useCallback, useEffect, useRef, useState, Component } = react;
 		const { jsx, jsxs } = jsxRuntime;
 
-		const REF_TOKEN = "KDOCS_TOKEN";
-		const REF_LOGIN = "KDOCS_AUTH_LOGIN";
-		const REF_STATUS = "KDOCS_AUTH_STATUS";
 		const DISPLAY_NAME = "金山文档 (kdocs)";
-		const LOGIN_POLL_MS = 2500;
-		const LOGIN_WAIT_MS = 330000;
+
+		/**
+		 * How long one `remote.kdocs.status()` may take before the panel reports a
+		 * failure instead of staying in "checking" forever.
+		 *
+		 * The Provider bounds the CLI call it makes, so a healthy status answers in
+		 * well under a second; this only fires when the carrier itself stops
+		 * answering — which is exactly the case where a stuck spinner would be
+		 * indistinguishable from a slow CLI.
+		 */
+		const STATUS_TIMEOUT_MS = 15000;
 
 		// Minimal inline WPS-style logo (green rounded square with white "K").
 		const LOGO_SVG = "data:image/svg+xml," + encodeURIComponent(
@@ -35,198 +54,338 @@ window.__ModuleLoader__.load({
 			'</svg>'
 		);
 
-		// ---- minimal inline styles ----
+		// Only tokens the product actually defines on the app root are used, each
+		// with the value the running build resolves to as its fallback.
+		const token = (name, fallback) => "var(" + name + ", " + fallback + ")";
+		const LABEL_PRIMARY = token("--dsw-alias-label-primary", "#0f1115");
+		const LABEL_SECONDARY = token("--dsw-alias-label-secondary", "#61666b");
+		const LABEL_TERTIARY = token("--dsw-alias-label-tertiary", "#81858c");
+		const BORDER = token("--dsw-alias-border-l3", "#0000001f");
+		const CARD = token("--dsw-alias-bg-layer-1", "#ffffff");
+		const SUCCESS = token("--dsw-alias-state-success-primary", "#22c55e");
+		const ERROR = token("--dsw-alias-state-error-primary", "#ec1313");
+		const WARN = token("--dsw-alias-state-warn-label", "#dd8629");
+
+		/** One status colour, tinted at 12% for a badge background. */
+		const badge = (colour) => ({
+			fontSize: 12,
+			padding: "2px 10px",
+			borderRadius: 999,
+			fontWeight: 500,
+			color: colour,
+			background: "color-mix(in srgb, " + colour + " 12%, transparent)",
+		});
+
 		const s = {
-			section: { display: "flex", maxWidth: 720, flexDirection: "column", gap: 11, color: "var(--dsw-alias-label-primary, #1f2329)" },
-			card: { border: "1px solid var(--dsw-alias-border, #d9dde3)", borderRadius: 8, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10, background: "var(--dsw-alias-bg-card, #ffffff)" },
+			section: { display: "flex", maxWidth: 720, flexDirection: "column", gap: 11, color: LABEL_PRIMARY },
+			card: { border: "1px solid " + BORDER, borderRadius: 8, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10, background: CARD },
 			header: { display: "flex", alignItems: "center", gap: 12 },
 			logo: { width: 40, height: 40, borderRadius: 8, flex: "0 0 40px" },
 			title: { fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 },
-			badge: { fontSize: 12, padding: "2px 10px", borderRadius: 999, fontWeight: 500 },
-			badgeOk: { background: "rgba(46,125,50,.12)", color: "#2e7d32" },
-			badgeNo: { background: "rgba(158,46,40,.12)", color: "#9e2e28" },
-			badgeBusy: { background: "rgba(120,120,120,.14)", color: "var(--dsw-alias-label-secondary, #8a9099)" },
 			row: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
-			button: { font: "inherit", fontSize: 13, padding: "6px 14px", borderRadius: 6, border: "1px solid var(--dsw-alias-border, #d9dde3)", background: "var(--dsw-alias-bg-card, #ffffff)", cursor: "pointer", color: "var(--dsw-alias-label-primary, #1f2329)" },
-			buttonPrimary: { background: "#2e7d32", borderColor: "#2e7d32", color: "#ffffff" },
-			buttonDanger: { color: "#9e2e28", borderColor: "rgba(158,46,40,.4)" },
+			button: { font: "inherit", fontSize: 13, padding: "6px 14px", borderRadius: 6, border: "1px solid " + BORDER, background: CARD, cursor: "pointer", color: LABEL_PRIMARY },
 			buttonDisabled: { opacity: .55, cursor: "not-allowed" },
-			input: { font: "inherit", fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--dsw-alias-border, #d9dde3)", minWidth: 260, background: "var(--dsw-alias-bg-card, #ffffff)", color: "inherit" },
-			desc: { fontSize: 12.5, color: "var(--dsw-alias-label-secondary, #5f6672)", lineHeight: 1.6 },
-			message: { fontSize: 12.5, padding: "6px 10px", borderRadius: 6, background: "rgba(21,101,192,.08)", color: "#1565c0" },
+			// A definition list rather than a table: it wraps the same way at any
+			// panel width and needs no column sizing.
+			fields: { display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 14px", fontSize: 13, alignItems: "baseline" },
+			key: { color: LABEL_SECONDARY },
+			value: { color: LABEL_PRIMARY, wordBreak: "break-all" },
+			muted: { color: LABEL_TERTIARY, wordBreak: "break-all" },
+			desc: { fontSize: 12.5, color: LABEL_SECONDARY, lineHeight: 1.6 },
+			code: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: 12.5, padding: "1px 6px", borderRadius: 4, background: token("--dsw-alias-interactive-bg-hover", "#2631480f"), color: LABEL_PRIMARY },
+			message: { fontSize: 12.5, padding: "6px 10px", borderRadius: 6, background: "color-mix(in srgb, " + ERROR + " 10%, transparent)", color: ERROR },
+			hint: { fontSize: 12.5, padding: "6px 10px", borderRadius: 6, background: token("--dsw-alias-interactive-bg-hover", "#2631480f"), color: LABEL_SECONDARY, lineHeight: 1.7 },
 		};
 
 		/**
-		 * Unwrap one client Remote answer. The client face of a namespace always
-		 * answers `{ok:true, value}` or `{ok:false, error}` — a business failure
-		 * arrives as a rejected envelope, not as a thrown exception.
+		 * Unwrap one client Remote answer.
+		 *
+		 * The client face of a namespace answers `{ok:true, value}` or
+		 * `{ok:false, error}`; a business failure is a rejected envelope, not a
+		 * thrown exception. Both shapes are accepted because the host half of a
+		 * Remote returns its business value directly (note 10 in the project's
+		 * own notes): if that ever reaches the browser unenveloped, reading
+		 * through `value` here must not turn a good answer into `undefined`.
 		 */
 		function unwrap(response, what) {
 			if (response && response.ok === true) return response.value;
-			const detail = response?.error?.message ?? response?.error?.code ?? "未返回结果";
-			throw new Error(what + "失败: " + detail);
+			if (response && response.ok === false) {
+				const detail = response.error?.message ?? response.error?.code ?? "未返回结果";
+				throw new Error(what + "失败: " + detail);
+			}
+			if (response && typeof response === "object") return response;
+			throw new Error(what + "失败: 未返回结果");
 		}
 
-		/** Read the two references this panel renders. Values are never returned by the host. */
-		async function readConfigured(credentials) {
-			const views = unwrap(await credentials.describe([REF_TOKEN, REF_STATUS]), "读取认证状态") ?? {};
-			return {
-				tokenConfigured: Boolean(views[REF_TOKEN]?.configured),
-				statusConfigured: Boolean(views[REF_STATUS]?.configured),
-			};
+		/**
+		 * Format the observation instant as a **date**.
+		 *
+		 * "上次检查" answers one question — is this reading current? — and a day is
+		 * the resolution that question needs. The seconds were noise: the Provider
+		 * caches for about ten seconds, so a minute-precision stamp mostly reported
+		 * when the user last clicked, not when the CLI last ran.
+		 *
+		 * @param iso - `KDocsStatus.checkedAt`, an ISO 8601 instant.
+		 * @returns the date, or null when there is no usable instant.
+		 */
+		function formatCheckedAt(iso) {
+			if (typeof iso !== "string") return null;
+			const when = new Date(iso);
+			if (Number.isNaN(when.getTime())) return null;
+			try {
+				return when.toLocaleDateString();
+			} catch (ignored) {
+				// A runtime without Intl must still say something truthful.
+				return iso.slice(0, 10);
+			}
 		}
 
-		function KdocsSettingsSection(props) {
-			const credentials = props.credentials;
-			const remote = props.remote;
-			const [ready, setReady] = useState(false);
-			const [tokenConfigured, setTokenConfigured] = useState(false);
-			const [statusConfigured, setStatusConfigured] = useState(false);
-			const [busy, setBusy] = useState(false);
-			const [tokenInput, setTokenInput] = useState("");
-			const [message, setMessage] = useState(null);
-			const pollTimer = useRef(null);
+		/** The credential source, as `KDocsStatus.source` names it. */
+		const SOURCE_LABEL = {
+			keychain: "系统钥匙串（System Keychain）",
+			environment: "环境变量",
+			flag: "命令行参数",
+			none: "无",
+		};
 
-			const refresh = useCallback(async () => {
-				try {
-					const snapshot = await readConfigured(credentials);
-					setTokenConfigured(snapshot.tokenConfigured);
-					setStatusConfigured(snapshot.statusConfigured);
-					setMessage(null);
-					return snapshot;
-				} catch (error) {
-					setMessage("无法读取认证状态: " + (error?.message ?? String(error)));
-					return null;
-				} finally {
-					setReady(true);
-				}
-			}, [credentials]);
-
-			useEffect(() => {
-				void refresh();
-				return () => {
-					if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
+		/**
+		 * Derive everything the panel renders from one status report.
+		 *
+		 * Kept as a pure function so the states are testable without a DOM: the
+		 * four outcomes (not installed / not signed in / signed in / never
+		 * checked) are otherwise only observable by looking at a rendered panel.
+		 *
+		 * @param status - a `KDocsStatus`, or null before the first answer.
+		 * @param failed - true when the last request itself failed.
+		 * @param errorMessage - why it failed.
+		 * @param pending - true while a request is in flight.
+		 * @returns the badge, the field rows and the reason line.
+		 */
+		function describeState(status, failed, errorMessage, pending) {
+			if (pending && status === null) {
+				return { badge: { label: "检查中…", colour: LABEL_TERTIARY }, rows: statusRows(null), problem: null };
+			}
+			if (failed) {
+				return {
+					badge: { label: "检查失败", colour: ERROR },
+					rows: statusRows(status),
+					problem: errorMessage ?? "无法从核心插件读取状态。",
 				};
-			}, [refresh]);
-
-			// The host writes KDOCS_AUTH_STATUS when its own status refresh lands
-			// (including right after `kdocs-cli auth login` exits), so follow the
-			// forwarded event instead of waiting for the next manual refresh.
-			useEffect(() => {
-				if (!remote || typeof remote.$on !== "function") return undefined;
-				let dispose;
-				try {
-					dispose = remote.$on("credentials/reference-updated", (ref) => {
-						if (ref === REF_TOKEN || ref === REF_STATUS || ref === REF_LOGIN) void refresh();
-					});
-				} catch (error) {
-					return undefined; // best-effort: manual refresh still works
-				}
-				return () => {
-					try { if (typeof dispose === "function") dispose(); } catch (error) { /* ignore */ }
+			}
+			if (status === null) {
+				return { badge: { label: "未检查", colour: LABEL_TERTIARY }, rows: statusRows(null), problem: null };
+			}
+			if (status.cliAvailable !== true) {
+				return {
+					badge: { label: "CLI 未安装", colour: WARN },
+					rows: statusRows(status),
+					problem: null,
 				};
-			}, [remote, refresh]);
+			}
+			if (status.authenticated !== true) {
+				return {
+					badge: { label: "未登录", colour: WARN },
+					rows: statusRows(status),
+					problem: null,
+				};
+			}
+			return { badge: { label: "已登录", colour: SUCCESS }, rows: statusRows(status), problem: null };
+		}
 
-			const startLogin = useCallback(async () => {
-				setBusy(true); setMessage(null);
-				try {
-					unwrap(await credentials.set(REF_LOGIN, String(Date.now())), "发起登录");
-					setMessage("已发起登录：浏览器将自动打开 WPS 授权页面，请完成确认…");
-					const started = Date.now();
-					if (pollTimer.current) clearInterval(pollTimer.current);
-					pollTimer.current = setInterval(async () => {
-						let snapshot;
-						try { snapshot = await readConfigured(credentials); } catch { return; }
-						setTokenConfigured(snapshot.tokenConfigured);
-						setStatusConfigured(snapshot.statusConfigured);
-						const done = snapshot.tokenConfigured || snapshot.statusConfigured || Date.now() - started > LOGIN_WAIT_MS;
-						if (done) {
-							if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
-							setBusy(false);
-							setMessage(snapshot.tokenConfigured || snapshot.statusConfigured ? "认证完成。" : "等待授权超时，请重试。");
-						}
-					}, LOGIN_POLL_MS);
-				} catch (error) {
-					setBusy(false);
-					setMessage("发起登录失败: " + (error?.message ?? String(error)));
+		/**
+		 * The label/value rows for one status report.
+		 *
+		 * A missing field renders as `—` rather than being dropped: "the version
+		 * is unknown" and "the version is not reported here" are different
+		 * states, and only one of them means something is wrong.
+		 *
+		 * @param status - a `KDocsStatus`, or null.
+		 * @returns the rows.
+		 */
+		function statusRows(status) {
+			const cliAvailable = status?.cliAvailable === true;
+			const rows = [
+				{ key: "CLI", value: cliAvailable ? "已安装" : "未安装" },
+				{ key: "版本", value: cliAvailable && typeof status.cliVersion === "string" ? status.cliVersion : "—" },
+			];
+			if (cliAvailable && typeof status.cliPath === "string") {
+				rows.push({ key: "路径", value: status.cliPath, muted: true });
+			}
+			if (cliAvailable) {
+				const source = SOURCE_LABEL[status.source] ?? (typeof status.source === "string" ? status.source : "—");
+				rows.push({ key: "凭据来源", value: status.authenticated === true ? source : "—" });
+				if (cliAvailable && typeof status.keychainBackend === "string") {
+					rows.push({ key: "系统钥匙串", value: status.keychainBackend });
 				}
-			}, [credentials]);
+			}
+			const checkedAt = formatCheckedAt(status?.checkedAt);
+			rows.push({ key: "上次检查", value: checkedAt ?? "—", muted: checkedAt === null });
+			return rows;
+		}
 
-			const saveToken = useCallback(async () => {
-				const value = tokenInput.trim();
-				if (!value) { setMessage("请输入 Token 再保存。"); return; }
-				setBusy(true); setMessage(null);
-				try {
-					unwrap(await credentials.set(REF_TOKEN, value), "保存 Token");
-					setTokenInput("");
-					setMessage("Token 已安全保存，正在验证…");
-					await new Promise((resolve) => setTimeout(resolve, 1500));
-					const snapshot = await refresh();
-					if (snapshot !== null) {
-						setMessage(snapshot.tokenConfigured || snapshot.statusConfigured
-							? "Token 已验证并启用。"
-							: "Token 已保存，但 kdocs-cli 仍报告未认证：请确认 Token 有效、本机已安装 kdocs-cli。");
-					}
-				} catch (error) {
-					setMessage("Token 保存失败: " + (error?.message ?? String(error)));
-				} finally {
-					setBusy(false);
-				}
-			}, [credentials, tokenInput, refresh]);
+		/** One label/value row. */
+		function Field(props) {
+			return jsxs("div", { style: { display: "contents" }, children: [
+				jsx("div", { style: s.key, children: props.label }),
+				jsx("div", { style: props.muted ? s.muted : s.value, children: props.children }),
+			] });
+		}
 
-			const logout = useCallback(async () => {
-				setBusy(true); setMessage(null);
-				try {
-					unwrap(await credentials.unset(REF_TOKEN), "退出登录");
-					setMessage("已退出登录（host 端将执行 kdocs-cli auth logout）。");
-					await new Promise((resolve) => setTimeout(resolve, 1500));
-					const snapshot = await refresh();
-					if (snapshot !== null && (snapshot.statusConfigured || snapshot.tokenConfigured)) {
-						setMessage("已清除 Token，但 kdocs-cli 仍报告已认证：可能还有其他来源的凭据。");
-					}
-				} catch (error) {
-					setMessage("退出失败: " + (error?.message ?? String(error)));
-				} finally {
-					setBusy(false);
-				}
-			}, [credentials, refresh]);
-
-			const authenticated = statusConfigured || tokenConfigured;
-			const badge = !ready
-				? { label: "检查中…", style: { ...s.badge, ...s.badgeBusy } }
-				: authenticated
-					? { label: "已认证", style: { ...s.badge, ...s.badgeOk } }
-					: { label: "未认证", style: { ...s.badge, ...s.badgeNo } };
-			const disabled = busy;
-
-			return jsxs("div", { style: s.section, children: [
-				jsx("div", { style: s.header, children: jsxs("div", { style: s.title, children: [
-					jsx("img", { src: LOGO_SVG, alt: "", style: s.logo }),
-					jsx("span", { children: DISPLAY_NAME }),
-					jsx("span", { style: badge.style, children: badge.label }),
-				] }) }),
-				jsxs("div", { style: s.card, children: [
-					jsx("div", { style: s.desc, children: "通过本机 kdocs-cli 操作金山文档云服务。令牌保存在操作系统钥匙串；本页负责发起授权、保存 Token 与退出登录。" }),
-					jsxs("div", { style: s.row, children: [
-						jsx("button", { style: { ...s.button, ...s.buttonPrimary, ...(disabled ? s.buttonDisabled : {}) }, disabled, onClick: startLogin, children: "OAuth 登录" }),
-						jsx("button", { style: { ...s.button, ...(disabled ? s.buttonDisabled : {}) }, disabled, onClick: () => { void refresh(); }, children: "刷新状态" }),
-						jsx("button", { style: { ...s.button, ...s.buttonDanger, ...(disabled ? s.buttonDisabled : {}) }, disabled, onClick: logout, children: "退出登录" }),
-					] }),
-				] }),
-				jsxs("div", { style: s.card, children: [
-					jsx("div", { style: { ...s.desc, fontWeight: 600 }, children: "使用 API Token（可选，与 OAuth 二选一）" }),
-					jsxs("div", { style: s.row, children: [
-						jsx("input", { style: s.input, type: "password", placeholder: "粘贴 WPS Token（KINGSOFT_DOCS_TOKEN）", value: tokenInput, disabled, onChange: (event) => { setTokenInput(event.target.value); } }),
-						jsx("button", { style: { ...s.button, ...(disabled ? s.buttonDisabled : {}) }, disabled, onClick: saveToken, children: "保存 Token" }),
-					] }),
-				] }),
-				message ? jsx("div", { style: s.message, children: message }) : null,
+		/** The `kdocs-cli auth login` instruction, shown whenever a sign-in is needed. */
+		function SignInHint(props) {
+			if (props.cliAvailable !== true) {
+				return jsxs("div", { style: s.hint, children: [
+					"本插件不安装 CLI。请先在终端安装金山官方 ",
+					jsx("code", { style: s.code, children: "kdocs-cli" }),
+					"（",
+					jsx("a", { href: "https://github.com/kdocs-app/kdocs-skill", target: "_blank", rel: "noreferrer", style: { color: "inherit" }, children: "kdocs-app/kdocs-skill" }),
+					"），再回到本页刷新状态。",
+				] });
+			}
+			return jsxs("div", { style: s.hint, children: [
+				"请在终端登录，然后在下方点击刷新：",
+				jsx("div", { style: { marginTop: 6 } }),
+				jsx("code", { style: s.code, children: "kdocs-cli auth login" }),
 			] });
 		}
 
 		/**
-		 * Slot bodies are rendered inside a runtime that swallows render throws
-		 * (the section would just go blank), so own the failure here and show it.
+		 * The settings section body.
+		 *
+		 * Props come from the slot factory's `inject`, so `remote` is the
+		 * `remote.kdocs` namespace service itself.
+		 */
+		function KdocsSettingsSection(props) {
+			const remote = props.remote;
+			const [status, setStatus] = useState(null);
+			const [pending, setPending] = useState(false);
+			const [error, setError] = useState(null);
+			// The raw answer trace, surfaced as a DOM attribute: when this panel has
+			// nothing to show, the reason it has nothing must be readable from the
+			// page rather than inferred from a blank card.
+			const [trace, setTrace] = useState("");
+			// Every awaited continuation checks this before setting state: a
+			// section that unmounts mid-request (a settings tab switch, a hot
+			// reload) must not write into an unmounted component.
+			const alive = useRef(true);
+			// The id of the newest request. Two overlapping refreshes would
+			// otherwise let the slower, older answer win.
+			const lastRequest = useRef(0);
+
+			useEffect(() => () => { alive.current = false; }, []);
+
+			const refresh = useCallback(async () => {
+				lastRequest.current += 1;
+				const mine = lastRequest.current;
+				setPending(true);
+				setError(null);
+				try {
+					// The namespace is injected, so its absence means the core plugin is
+					// not mounted. Say that instead of calling into nothing: a thrown
+					// `undefined is not a function` is exactly the kind of message a user
+					// cannot act on.
+					if (remote === undefined || remote === null || typeof remote.status !== "function") {
+						throw new Error("核心插件 dsh-kdocs-inside 未挂载：设置页读不到 remote.kdocs。");
+					}
+					// Race the carrier. `status()` is called here, outside the timeout
+					// callback, so the request goes out immediately; the second arm only
+					// exists so that a carrier which never answers surfaces as a failure
+					// instead of a permanently disabled button. "Still checking" is not a
+					// state a status panel may occupy forever.
+					const startedAt = Date.now();
+					setTrace("waiting for remote.kdocs.status()");
+					/** @type {any} */
+					let timer;
+					const call = Promise.resolve(remote.status()).then(
+						(value) => ({ kind: "answer", value }),
+						(error) => ({ kind: "threw", error }),
+					);
+					const answer = await Promise.race([
+						call,
+						new Promise((resolve) => {
+							timer = setTimeout(() => {
+								resolve({ kind: "timeout" });
+							}, STATUS_TIMEOUT_MS);
+						}),
+					]);
+					clearTimeout(timer);
+					const elapsed = String(Date.now() - startedAt);
+					if (answer.kind === "timeout") {
+						setTrace("timed out after " + elapsed + "ms");
+						throw new Error("读取超时：核心插件未在 " + String(STATUS_TIMEOUT_MS) + " 毫秒内返回状态。");
+					}
+					if (answer.kind === "threw") {
+						setTrace("threw after " + elapsed + "ms: " + (answer.error?.message ?? String(answer.error)));
+						throw answer.error;
+					}
+					setTrace("answered in " + elapsed + "ms: "
+						+ (typeof answer.value === "string"
+							? answer.value
+							: (JSON.stringify(answer.value) ?? String(answer.value))).slice(0, 300));
+					const report = unwrap(answer.value, "读取金山文档状态");
+					if (!alive.current || mine !== lastRequest.current) return;
+					setStatus(report ?? null);
+				} catch (failure) {
+					// Never an empty string: `data-kdocs-settings-error` is how this
+					// panel says why it has nothing to show, and a blank reason is
+					// indistinguishable from "no reason".
+					const reason = failure?.message || String(failure) || "未知错误";
+					setTrace((current) => (current === "" ? "failed: " + reason : current));
+					setError(reason);
+				} finally {
+					setPending(false);
+				}
+			}, [remote]);
+
+			// One request when the section mounts, and nothing else: the Provider
+			// caches its status for about ten seconds, so polling would spawn CLI
+			// processes to re-learn the same answer.
+			useEffect(() => {
+				void refresh();
+			}, [refresh]);
+
+			const state = describeState(status, error !== null, error, pending);
+			const problem = state.problem ?? (error === null && status?.reason !== undefined ? status.reason : null);
+			const needsSignIn = error === null && status !== null && (status.cliAvailable !== true || status.authenticated !== true);
+
+			return jsxs("div", {
+				style: s.section,
+				"data-kdocs-settings-state": state.badge.label,
+				"data-kdocs-settings-error": error ?? "",
+				"data-kdocs-settings-trace": trace,
+				children: [
+					jsx("div", { style: s.header, children: jsxs("div", { style: s.title, children: [
+						jsx("img", { src: LOGO_SVG, alt: "", style: s.logo }),
+						jsx("span", { children: DISPLAY_NAME }),
+						jsx("span", { style: badge(state.badge.colour), children: state.badge.label }),
+					] }) }),
+					jsxs("div", { style: s.card, children: [
+						jsx("div", { style: s.desc, children: "只读状态面板：显示本机 kdocs-cli 是否可用、是否已登录。登录、退出与凭据都由 CLI 自己管理，本页不写入任何凭据。" }),
+						jsx("div", { style: s.fields, children: state.rows.map((row) => jsx(Field, { label: row.key, muted: row.muted === true, children: row.value })) }),
+						jsx("div", { style: s.row, children: jsx("button", {
+							style: { ...s.button, ...(pending ? s.buttonDisabled : {}) },
+							// `undefined` rather than `false`: an enabled button must not
+							// carry a `disabled` attribute at all.
+							disabled: pending || undefined,
+							onClick: () => { void refresh(); },
+							children: pending ? "刷新中…" : "刷新状态",
+						}) }),
+						problem === null ? null : jsx("div", { style: s.message, children: problem }),
+						needsSignIn ? jsx(SignInHint, { cliAvailable: status.cliAvailable === true }) : null,
+						// Signing out is a terminal command with no UI here, so the only
+						// thing worth adding is where it lives. Everything else this panel
+						// knows is already in the field rows above.
+						status !== null && status.cliAvailable === true && status.authenticated === true
+							? jsx("div", { style: s.desc, children: "需要退出登录时，请在终端执行 kdocs-cli auth logout。" })
+							: null,
+					] }),
+				],
+			});
+		}
+
+		/**
+		 * Slot bodies render inside a runtime that swallows render throws (the
+		 * section would just go blank), so own the failure here and show it.
 		 */
 		class SectionBoundary extends Component {
 			constructor(props) {
@@ -248,20 +407,38 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		function apply(e) {
-			const remote = e.remote;
-			const credentials = e.remote.credentials;
-			e.slots.inject("settings.section", () => e.slots.register({
-				name: "settings.section",
-				id: "kdocs",
-				order: 35,
-				label: DISPLAY_NAME,
-			}, () => jsx(SectionBoundary, { children: jsx(KdocsSettingsSection, { credentials, remote }) })));
+		function apply(ctx) {
+			// Park on the namespace service instead of reading through
+			// `ctx.remote.kdocs` now: that read would mark this context as having
+			// touched an uninjected service and every later access would throw.
+			// Without the core plugin the body simply never runs, so a
+			// `kdocs-settings` installed alone shows no section rather than an
+			// error — which is the honest outcome, since it owns no data itself.
+			//
+			// `ctx.inject` returns a fiber whose effects belong to this plugin, so
+			// unloading (or hot-reloading) it withdraws the section and the
+			// namespace subscription together. `ctx.effect` is deliberately *not*
+			// wrapped around it: the callback would then have to return that fiber
+			// as a disposer, which Cordis rejects.
+			ctx.inject(["remote.kdocs"], (scoped) => {
+				ctx.slots.inject("settings.section", () => ctx.slots.register({
+					name: "settings.section",
+					id: "kdocs",
+					order: 35,
+					label: DISPLAY_NAME,
+					inject: () => ({ remote: scoped.remote.kdocs }),
+				}, () => jsx(SectionBoundary, { children: jsx(KdocsSettingsSection, { remote: scoped.remote.kdocs }) })));
+			});
 		}
 
 		exports.apply = apply;
-		exports.inject = ["slots", "remote", "remote.credentials"];
+		exports.inject = ["slots", "remote"];
 		exports.DISPLAY_NAME = DISPLAY_NAME;
+		exports.describeState = describeState;
+		exports.statusRows = statusRows;
+		exports.formatCheckedAt = formatCheckedAt;
+		exports.unwrap = unwrap;
+		exports.KdocsSettingsSection = KdocsSettingsSection;
 		return module.exports;
 	}
 });
