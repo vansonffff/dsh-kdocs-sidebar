@@ -8,6 +8,30 @@
 
 ---
 
+## 0.4.0 — 2026-09-25
+
+### 变更
+
+- **桌面端（Electron）「原版」= PDF 预览**。桌面壳的 iframe 嵌入读的是应用自己的
+  Chromium profile，与系统浏览器不共享登录态；实测（CDP 接入真机）金山授权接口
+  `grant_authorize_code` 在该上下文恒定 403，会话 cookie 始终写不进 jar——
+  iframe 内嵌登录是死路。本版改为：桌面端「原版」模式下由 Host 用 kdocs-cli 的
+  `wps.export` 导出 PDF（轮询 `query-export`，签名 URL 无需 cookie，裸下载 200
+  实测），客户端经 `require.async('./client-pdf.js')` 懒加载内置 pdf.js 渲染
+  （逐页 canvas、宽度自适应、缩放）。**web profile 零变化**：iframe 原版照旧，
+  PDF chunk 不会下载。探测信号是桌面壳特权 scheme `dsh-app:`，默认一律按 web。
+- **撤回「网页登录」入口**：0.3.1（未发布）曾按桌面壳恢复该页，真机证明其无法
+  完成登录后移除，代码回到 0.3.0 形态。
+
+### 验证
+
+- 273/273 测试通过（新增桌面 PDF 套件 10 条 + 真机活测 2 条：真实导出/缓存/刷新）。
+- 负向对照：拆掉 PDF pane 的门控后，源级契约断言如期转红；web 行为由
+  「web 端渲染 iframe 且无 PDF pane」行为断言守住。
+- 真机：CLI 导出链路逐步实测（建任务 → 轮询 → 签名 URL 裸 curl 200，105 KB PDF）。
+
+---
+
 ## 0.3.0 — 2026-09-25
 
 ### 变更

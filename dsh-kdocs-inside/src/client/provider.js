@@ -57,6 +57,9 @@ const DEFAULTS = {
   maxContentBytes: 512 * 1024,
   statusTtlMs: STATUS_TTL_MS,
   pageSize: 100,
+  exportPollIntervalMs: 1_500,
+  exportTimeoutMs: 90_000,
+  pdfCacheMax: 20,
 };
 
 /**
@@ -67,6 +70,9 @@ const DEFAULTS = {
  * @property {number} [maxContentBytes] - budget for one extracted body before it is truncated.
  * @property {number} [statusTtlMs] - how long a status observation stays fresh.
  * @property {number} [pageSize] - entries requested per listing/search page (the CLI allows 1–500).
+ * @property {number} [exportPollIntervalMs] - gap between `wps.query-export` polls.
+ * @property {number} [exportTimeoutMs] - ceiling for one PDF export, polls included.
+ * @property {number} [pdfCacheMax] - exported PDFs kept in memory before the oldest is evicted.
  */
 
 /**
@@ -102,6 +108,15 @@ export class KDocsCliProvider {
     this.statusCache = undefined;
     /** @type {string | undefined} */
     this.versionCache = undefined;
+    /**
+     * Exported PDFs, keyed `driveId/fileId`. The bytes live here rather than on
+     * disk: the export is a signed-URL download that expires in minutes, the
+     * panel re-reads on every refresh anyway, and a temp file would only add a
+     * cleanup problem. Evicted oldest-first past `pdfCacheMax`.
+     *
+     * @type {Map<string, { base64: string, size: number, exportedAt: string }>}
+     */
+    this.pdfCache = new Map();
   }
 
   /** Drop cached observations, so the next read asks the CLI again. */
@@ -675,6 +690,133 @@ export class KDocsCliProvider {
     }
     return url;
   }
+
+  /**
+   * Export one document as a PDF and return its bytes, base64-encoded.
+   *
+   * This is the desktop shell's 原版 substitute: the embedded WPS viewer needs a
+   * web session the app's Chromium profile cannot acquire (measured 2026-09-25:
+   * the OAuth authorize step 403s and the session cookie never lands in the
+   * jar), while this path is authenticated by the CLI token end to end —
+   * `wps.export` starts a task, `wps.query-export` polls it, and the result URL
+   * is a signed object-store URL that needs no cookie (verified bare: HTTP 200).
+   *
+   * Bytes cross the wire base64 inside the framework envelope: a 100 KB contract
+   * arrives as ~140 KB of text, acceptable for a sidebar preview, and it avoids
+   * inventing a file-serving route (which this package must never do).
+   *
+   * @param {import('../types.js').KDocsFileRef} ref - the document to export.
+   * @param {{ refresh?: boolean }} [options] - `refresh: true` bypasses the cache.
+   * @param {AbortSignal} [signal] - cancels the call.
+   * @returns {Promise<{ base64: string, size: number, exportedAt: string, cached: boolean }>} the PDF payload.
+   * @throws {KDocsError} `'timeout'` when the export outlives `exportTimeoutMs`,
+   *   `'malformed-response'` when the CLI omits the task or the URL.
+   */
+  async exportPdf(ref, optionsOrSignal, maybeSignal) {
+    const options = isAbortSignal(optionsOrSignal) ? {} : (optionsOrSignal ?? {});
+    const signal = isAbortSignal(optionsOrSignal) ? optionsOrSignal : maybeSignal;
+    requireRef(ref, 'wps.export');
+
+    const cacheKey = `${ref.driveId}/${ref.fileId}`;
+    const cached = this.pdfCache.get(cacheKey);
+    if (cached !== undefined && options.refresh !== true) return { ...cached, cached: true };
+
+    const exported = await runAction('wps', 'export', { file_id: ref.fileId, format: 'pdf' }, {
+      signal,
+      timeoutMs: this.options.defaultTimeoutMs,
+    });
+    const exportPayload = asRecord(exported.data);
+    const taskId = typeof exportPayload.task_id === 'string' ? exportPayload.task_id : undefined;
+    if (taskId === undefined) {
+      throw new KDocsError('malformed-response', {
+        operation: 'wps.export',
+        message: 'kdocs-cli 未返回导出任务 ID',
+      });
+    }
+    const taskType = typeof exportPayload.task_type === 'string' ? exportPayload.task_type : 'normal_export';
+
+    const deadline = Date.now() + this.options.exportTimeoutMs;
+    /** @type {string | undefined} */
+    let downloadUrl;
+    for (;;) {
+      if (signal?.aborted) {
+        throw new KDocsError('aborted', { operation: 'wps.query-export', message: '导出已取消' });
+      }
+      if (Date.now() > deadline) {
+        throw new KDocsError('timeout', {
+          operation: 'wps.query-export',
+          message: `PDF 导出超过 ${Math.round(this.options.exportTimeoutMs / 1000)} 秒仍未完成`,
+          retryAfterMs: this.options.exportPollIntervalMs,
+        });
+      }
+      await sleep(this.options.exportPollIntervalMs, signal);
+      const polled = await runAction('wps', 'query-export', { format: 'pdf', task_id: taskId, task_type: taskType }, {
+        signal,
+        timeoutMs: this.options.defaultTimeoutMs,
+      });
+      const polledPayload = asRecord(polled.data);
+      const status = typeof polledPayload.status === 'string' ? polledPayload.status : '';
+      const inner = asRecord(polledPayload.data);
+      if (status === 'finished' || inner.result === 'ok') {
+        downloadUrl = typeof inner.url === 'string' && inner.url !== '' ? inner.url : undefined;
+        break;
+      }
+      if (status === 'failed' || status === 'error') {
+        throw new KDocsError('cli-failed', {
+          operation: 'wps.query-export',
+          message: `金山文档导出失败（status=${status}）`,
+        });
+      }
+      // Anything else is a pending state; keep polling until the deadline.
+    }
+    if (downloadUrl === undefined) {
+      throw new KDocsError('malformed-response', {
+        operation: 'wps.query-export',
+        message: '导出完成但 kdocs-cli 未返回下载地址',
+      });
+    }
+
+    const response = await fetch(downloadUrl, { signal });
+    if (!response.ok) {
+      throw new KDocsError('cli-failed', {
+        operation: 'wps.export.download',
+        message: `下载导出的 PDF 失败（HTTP ${response.status}）`,
+      });
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const result = { base64: buffer.toString('base64'), size: buffer.length, exportedAt: new Date().toISOString() };
+
+    this.pdfCache.delete(cacheKey);
+    this.pdfCache.set(cacheKey, result);
+    while (this.pdfCache.size > this.options.pdfCacheMax) {
+      const oldest = this.pdfCache.keys().next().value;
+      this.pdfCache.delete(oldest);
+    }
+    return { ...result, cached: false };
+  }
+}
+
+/**
+ * Sleep in poll-sized steps, aborting promptly when the caller cancels.
+ *
+ * @param {number} ms - how long to wait.
+ * @param {AbortSignal} [signal] - cancels the wait.
+ * @returns {Promise<void>} resolves when the wait ends.
+ */
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new KDocsError('aborted', { operation: 'sleep', message: '已取消' }));
+    };
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**

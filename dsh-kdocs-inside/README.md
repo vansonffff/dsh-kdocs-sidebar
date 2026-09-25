@@ -1,14 +1,34 @@
 # dsh-kdocs-inside — 金山文档 for DeepSeek Harness
 
 > 在 DSH 右侧边栏里**浏览、预览、引用**你的金山文档云盘；Agent 也能通过 4 个只读工具直接读正文。
+> **Web 与桌面端（Electron）双端适配**：同一份包装进两个宿主，各自用各自可行的方式预览。
 
-需要 DSH `0.1.7-rc.1`（本地实测）· Node ≥ 22.19
+需要 DSH `0.1.7-rc.1` 及以上（含官方桌面端 0.1.7-rc.2）· Node ≥ 22.19
 
 **版本变动请看 [`CHANGELOG.md`](CHANGELOG.md)**；本文件只介绍这个项目本身。
 
 本插件是 `dsh-kdocs` 的核心包。仓库里的 `kdocs/` 目录名与包名 `dsh-kdocs-inside`
 不一致是历史原因，包名不再变动。
 
+---
+
+## 双端行为一览
+
+同一份包装进 web profile 和官方桌面端（Electron）后，面板、预览、工具完全一致，
+**只有「原版」预览的实现按端分流**——因为两端的浏览器会话模型不同：
+
+| | Web（浏览器） | 桌面端（Electron） |
+|---|---|---|
+| 右栏面板 / 文件树 / 搜索 | ✅ 一致 | ✅ 一致 |
+| 「文本」预览（CLI 抽取正文） | ✅ 一致 | ✅ 一致 |
+| **「原版」预览** | 内嵌金山文档**在线编辑器**（iframe，可读可编辑），直接使用浏览器里已有的金山文档登录态 | **PDF 导出预览**（只读）：Host 用 kdocs-cli 导出 PDF，插件内置 pdf.js 渲染，逐页 canvas + 缩放 |
+| 编辑文档 | 直接在预览里编辑 | 点「在金山文档打开」，跳系统浏览器编辑 |
+| 依赖的登录态 | 浏览器里的金山文档 web 会话 | kdocs-cli 的 Token（系统密钥链），与网页登录无关 |
+
+**为什么桌面端不是 iframe 内嵌**：桌面端的 iframe 读的是应用自己的 Chromium
+profile，与系统浏览器不共享 cookie；实测金山文档的授权接口在该嵌入上下文恒定
+拒绝（授权码签发 403），会话无法建立。PDF 导出路径全程走 CLI Token，是唯一不依赖
+网页会话的版式预览通道。桌面端首次预览有几秒导出延迟；文档改动后点「↻」重新导出。
 
 ---
 
@@ -23,9 +43,9 @@
 | 层 | 边界 |
 |---|---|
 | **Agent 工具**（4 个） | **只读** |
-| **Provider / Remote** | 含一项显式写入：`rename` |
-| **「原版」嵌入的 iframe** | 金山文档自己的**可写编辑器**，可能被人工编辑 |
-| **预览的「文本」模式** | **只读**（由 CLI 抽取） |
+| **Provider / Remote** | 写入仅两项：`rename`（重命名）、`exportPdf`（导出 PDF 副本，不回写原文档） |
+| **「原版」嵌入的 iframe（仅 web 端）** | 金山文档自己的**可写编辑器**，可能被人工编辑 |
+| **「原版」PDF 预览（仅桌面端）与「文本」模式** | **只读** |
 
 ---
 
@@ -42,6 +62,9 @@
 | 1 | **kdocs-cli**，并已登录 | 金山办公官方（不是本项目） | `kdocs-cli auth status` → `"authenticated": true` |
 | 2 | **DeepSeek Harness（DSH）** | DSH 官方 | `dsh --version` |
 | 3 | **本插件** | 本项目 | 右栏出现「金山文档」 |
+
+> web 端的「原版」iframe 预览额外需要**浏览器里登录过金山文档**（kdocs.cn）。
+> 桌面端不需要——它走 CLI Token。
 
 ---
 
@@ -135,6 +158,10 @@ dsh web
 **装完必须重启 `dsh web`，然后在浏览器里重新加载页面。** 插件的 host 半边是在装配时定死的，
 只刷新浏览器不会生效。
 
+**装进官方桌面端**：桌面端 profile 由 Electron 应用独占管理（CLI 会拒绝
+`--profile desktop`），请在桌面端的「设置 → 插件」里按路径安装本包目录。
+桌面端改了 host 半边后同样需要重启应用。
+
 卸载：
 
 ```bash
@@ -151,7 +178,8 @@ dsh plugin --profile web remove dsh-kdocs-inside
 | 面 | 你会看到的东西 |
 |---|---|
 | **右栏面板** | 「金山文档」文件树：我的云文档 / 星标 / 最近 / 共享给我 / 我分享的 / 回收站，逐层懒加载、可搜索、可加载更多 |
-| **预览 Tab** | 点开文档默认内嵌 **WPS 原版查看器**，也可以切到「文本」模式读抽取出来的正文 |
+| **预览 Tab（web）** | 默认内嵌 **WPS 原版在线编辑器**，可切「文本」模式读抽取正文 |
+| **预览 Tab（桌面端）** | 「原版」为 **PDF 导出预览**（pdf.js 渲染、缩放、逐页）；「文本」模式与 web 一致 |
 | **引用到对话** | 预览里「引用到对话」或划选后「引用选中片段」→ 输入框写入 `dsh-resource://kdocs/file/<driveId>/<fileId>` |
 | **手动重命名** | 在 Sidebar 里由你主动触发，用于人工版本管理（见下文） |
 | **Agent 工具** | `kdocs_list` / `kdocs_search` / `kdocs_stat` / `kdocs_read` —— **四个全是只读** |
@@ -180,7 +208,8 @@ dsh plugin --profile web remove dsh-kdocs-inside
 
 换言之：**本插件不主动向 Agent 暴露写入工具，但它不是、也无法作为安全沙箱。**
 
-预览 Tab 里的「原版」是 WPS 自己的在线编辑器，你在里面编辑是 WPS 的行为，与本插件无关。
+web 端预览 Tab 里的「原版」是 WPS 自己的在线编辑器，你在里面编辑是 WPS 的行为，与本插件无关。
+桌面端的 PDF 导出只生成一份临时副本，不回写原文档。
 
 ### 手动重命名是干什么的
 
@@ -238,6 +267,14 @@ dsh plugin --profile web remove dsh-kdocs-inside
 **报 `未找到 kdocs-cli`**
 没装 CLI，或装在非标准位置。回到第 1 步，或设 `KDOCS_CLI_DIR`。
 
+**桌面端「原版」为什么不是在线编辑器？**
+0.4.0 起桌面端改为 PDF 导出预览。内嵌登录在桌面壳里不可行（金山授权接口在嵌入
+上下文拒绝签发授权码，会话 cookie 无法建立），PDF 导出是唯一不依赖网页会话的
+版式预览通道。要编辑文档，请点「在金山文档打开」。
+
+**web 端「原版」显示登录页**
+浏览器里先登录一次金山文档（kdocs.cn），回预览点「↻ 刷新「原版」」。
+
 **企业账号登录一直转圈或失败**
 金山官方说明 `kdocs-cli` 面向 **WPS 个人账号**；企业账号请使用相应的企业产品或官方工具。
 不要在同一个企业账号状态下反复重试。
@@ -272,6 +309,9 @@ dsh plugin --profile web remove dsh-kdocs-inside
 | `maxContentBytes` | `524288` | 单篇正文预算，超出按行截断（`truncated: true`） |
 | `statusTtlMs` | `10000` | 认证状态缓存 |
 | `pageSize` | `100` | 每页条数（CLI 允许 1–500） |
+| `exportTimeoutMs` | `90000` | 一次 PDF 导出的上限（含轮询） |
+| `exportPollIntervalMs` | `1500` | 导出结果轮询间隔 |
+| `pdfCacheMax` | `20` | 内存里保留的导出 PDF 份数（超出逐出最旧） |
 
 ---
 
@@ -308,8 +348,8 @@ dsh plugin --profile web remove dsh-kdocs-inside
 
 ## 测试
 
-本包以**发布镜像**的形式托管：仓库里只有插件本体（`client.js`、`src/`、配置与文档），
-**不含测试套件与开发过程记录** —— 它们留在开发工作区，不随包、也不随仓库发布。
+本包以**发布镜像**的形式托管：仓库里只有插件本体（`client.js`、`client.pdf.js`、`src/`、
+配置与文档），**不含测试套件与开发过程记录** —— 它们留在开发工作区，不随包、也不随仓库发布。
 
 如果你要在本地验证这个插件，最直接的方式是把它装进一个 DSH profile，
 然后在右栏打开「金山文档」面板：面板能列出你的云盘，就说明 CLI、凭据、
@@ -320,9 +360,13 @@ dsh plugin --profile web remove dsh-kdocs-inside
 ## 兼容性与版本
 
 - 本地源码已适配并实测 DSH `0.1.7-rc.1` 的 `remote.kdocs`、`sidebarRightTabs`
-  和 Typert `create()` 描述符。再次升级 DSH 时，建议先在另一个 profile 里验证。
+  和 Typert `create()` 描述符；桌面端实测于官方桌面应用 `0.1.7-rc.2`（macOS arm64）。
+  再次升级 DSH 时，建议先在另一个 profile 里验证。
 - 依赖面全部公开可解析：`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-typert-protocol`
   （`^0.1.7-rc.1`）。
+- 桌面端 PDF 渲染使用内置的 [pdf.js](https://github.com/mozilla/pdf.js) v3.11.174
+  （Apache-2.0，见 `vendor/pdfjs-LICENSE.txt`），仅在桌面端首次打开预览时懒加载；
+  web 端不会下载它。
 - 版本变动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## License

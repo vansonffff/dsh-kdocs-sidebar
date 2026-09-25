@@ -64,6 +64,23 @@ window.__ModuleLoader__.load({
     const PANEL_SPACE = SPACE;
 
     /**
+     * Whether this bundle is running inside the desktop shell.
+     *
+     * The desktop app's renderer is served from the privileged `dsh-app:` scheme
+     * (verified in the shipped shell: `protocol.handle(SCHEME)` where
+     * `SCHEME = "dsh-app"`, and the main window's URL is `dsh-app://app/…`),
+     * while the web profile is plain `http:` on 127.0.0.1. The protocol is
+     * therefore a positive, single-word discriminator between the two.
+     *
+     * The default is deliberately *web*: any environment that cannot positively
+     * prove it is the desktop shell — including the unit-test stubs, which carry
+     * no `location` — gets exactly the web behavior.
+     */
+    const IS_DESKTOP_SHELL = typeof window === 'object' && window !== null
+      && typeof window.location === 'object' && window.location !== null
+      && window.location.protocol === 'dsh-app:';
+
+    /**
      * The one geometry every control in the preview header uses.
      *
      * The four controls used to carry two different geometries — the mode pair at
@@ -162,6 +179,12 @@ window.__ModuleLoader__.load({
         cancellable: true,
       },
       { method: 'getLink', implementation: 'remoteGetLink', parameters: [{ name: 'ref' }], cancellable: true },
+      {
+        method: 'exportPdf',
+        implementation: 'remoteExportPdf',
+        parameters: [{ name: 'ref' }, { name: 'options', optional: true }],
+        cancellable: true,
+      },
     ];
 
     /** The contribution mounted into the Client Remote. */
@@ -746,6 +769,78 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Decode the Host's base64 PDF payload into bytes.
+     *
+     * @param {string} base64 - the wire payload.
+     * @returns {Uint8Array} the decoded bytes.
+     */
+    function base64ToBytes(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    /**
+     * The desktop shell's 原版 body: the document rendered from its exported PDF.
+     *
+     * Two lazy things happen on mount: the Host exports and downloads the PDF
+     * (CLI token, no web session — the only path that can work in the desktop
+     * shell), and the viewer chunk arrives via `require.async`, the platform's
+     * own pattern for package-local lazy code. The web profile never pays for
+     * either: this component is only mounted when {@link IS_DESKTOP_SHELL}.
+     *
+     * `nonce` is the header's ↻: the first mount uses the Host's cache, any
+     * reload forces a fresh export, because the document may have changed since.
+     *
+     * @param {any} props - `{ fileRef, remote, t, nonce, signal }`.
+     * @returns {any} the rendered pane.
+     */
+    function KDocsPdfPane(props) {
+      const { fileRef, remote, t, nonce, signal } = props;
+      const [state, setState] = useState({ status: 'loading', error: undefined, bytes: undefined, Viewer: undefined });
+
+      useEffect(() => {
+        let cancelled = false;
+        setState({ status: 'loading', error: undefined, bytes: undefined, Viewer: undefined });
+        void (async () => {
+          try {
+            const [result, chunk] = await Promise.all([
+              remote.exportPdf(fileRef, { refresh: nonce > 0 }, signal).then(unwrapResult),
+              // The loader resolves package-local chunks against this bundle's own
+              // row — the file ships in the package but is served on demand.
+              require.async('./client.pdf.js'),
+            ]);
+            if (cancelled) return;
+            if (result.ok !== true) {
+              setState({ status: 'error', error: result.error?.message ?? t('pdfLoadFailed'), bytes: undefined, Viewer: undefined });
+              return;
+            }
+            setState({ status: 'ready', error: undefined, bytes: base64ToBytes(result.value.base64), Viewer: chunk.KDocsPdfViewer });
+          } catch (error) {
+            // An aborted call is the tab closing or reloading, not a failure.
+            if (cancelled || signal?.aborted) return;
+            setState({ status: 'error', error: String(error && error.message ? error.message : error), bytes: undefined, Viewer: undefined });
+          }
+        })();
+        return () => {
+          cancelled = true;
+        };
+        // `signal` is not referentially stable (the read effect above learned this
+        // the hard way): the work is keyed by the document and the reload nonce.
+      }, [fileRef, nonce]);
+
+      if (state.status === 'ready' && state.Viewer !== undefined && state.bytes !== undefined) {
+        return jsx(state.Viewer, { bytes: state.bytes, t });
+      }
+      return jsx('div', {
+        'data-kdocs-pdf-pane': state.status,
+        style: { flex: '1 1 auto', minHeight: '0', padding: '14px 12px', fontSize: '12.5px', color: 'var(--dsw-alias-label-secondary)', overflow: 'auto' },
+        children: state.status === 'loading' ? t('pdfLoading') : (state.error ?? t('pdfLoadFailed')),
+      });
+    }
+
+    /**
      * The preview body.
      *
      * Reads metadata through the standard `useResource` hook (the value M4
@@ -778,7 +873,14 @@ window.__ModuleLoader__.load({
       const [nonce, setNonce] = useState(0);
       /** The embedded WPS viewer's URL, built from identity. */
       const embedUrl = ref === undefined ? undefined : kdocsEmbedUrl(ref);
-      const embedding = mode === 'embed' && embedUrl !== undefined;
+      // The 原版 mode splits by shell. On the web the iframe embed reads the
+      // browser's existing 金山文档 session and works as-is. In the desktop shell
+      // that embed can never sign in (measured 2026-09-25: the OAuth authorize
+      // step 403s and the session cookie never lands in the app's jar), so the
+      // desktop renders the CLI-exported PDF instead — see KDocsPdfPane.
+      const embedRequested = mode === 'embed' && embedUrl !== undefined;
+      const embedding = embedRequested && !IS_DESKTOP_SHELL;
+      const pdfPreview = embedRequested && IS_DESKTOP_SHELL;
       // `useResource` is a global standard prop the resource model contributes to
       // every slot component. It is optional here on purpose: when it is absent the
       // preview still works, because the header name and the embed URL both come
@@ -938,14 +1040,11 @@ window.__ModuleLoader__.load({
         children: [
           jsx('div', { key: 'name', style: { flex: '1 1 auto', minWidth: 0, fontSize: '12.5px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: name }),
           modeGroup,
-          // Reload belongs to the embedded view, so it is hidden in text mode, where
-          // the extraction is authenticated by the kdocs-cli token instead.
-          //
-          // The sign-in page that used to sit beside it was removed on the reader's
-          // instruction (0.2.5). See MILESTONE-0.2.5-UI-POLISH.md for what it did and
-          // how to bring it back — this reload control survives it, and is still the
-          // only way to re-mount a cross-origin frame whose session changed under it.
-          embedding
+          // Reload belongs to the embedded/PDF view, so it is hidden in text mode,
+          // where the extraction is authenticated by the kdocs-cli token instead.
+          // On the web it re-mounts the cross-origin frame; on the desktop shell
+          // the same control forces a fresh PDF export (the pane reads `nonce`).
+          embedding || pdfPreview
             ? jsx('button', {
               key: 'embedReload',
               type: 'button',
@@ -1064,11 +1163,21 @@ window.__ModuleLoader__.load({
         : undefined;
 
       return jsxs('div', {
-        'data-kdocs-preview': embedding ? 'embed' : (doc.format ?? 'pending'),
+        'data-kdocs-preview': embedding ? 'embed' : (pdfPreview ? 'pdf' : (doc.format ?? 'pending')),
         style: { display: 'flex', flexDirection: 'column', height: '100%', boxSizing: 'border-box', overflow: 'hidden' },
         children: [
           header,
-          embedding ? embedArea : scrollArea,
+          // eslint-disable-next-line no-nested-ternary -- the three-way shell/mode split is the point
+          embedding ? embedArea : (pdfPreview
+            ? jsx(KDocsPdfPane, {
+              key: 'pdfArea',
+              fileRef: ref,
+              remote: props.remote,
+              t,
+              nonce,
+              signal: tab.signal,
+            })
+            : scrollArea),
           // Fixed-positioned, so it floats over the reader wherever the selection
           // was made. `--dsw-alias-bg-overlay` is the theme's own popover surface:
           // a transparent button over body text is unreadable in one of the two
@@ -1158,6 +1267,9 @@ window.__ModuleLoader__.load({
       modeText: '文本',
       embedSignIn: '在金山文档中打开',
       embedReload: '刷新「原版」',
+      pdfLoading: '正在生成 PDF 预览（首次需要几秒导出）…',
+      pdfLoadFailed: 'PDF 预览加载失败',
+      pdfPages: '共 {pages} 页',
       quote: '引用到对话',
       quoteSelection: '引用选中片段',
       viewTree: '我的云文档',
@@ -1228,6 +1340,9 @@ window.__ModuleLoader__.load({
       modeText: 'Text',
       embedSignIn: 'Open in 金山文档',
       embedReload: 'Reload Original view',
+      pdfLoading: 'Generating the PDF preview (the first export takes a few seconds)…',
+      pdfLoadFailed: 'The PDF preview failed to load',
+      pdfPages: '{pages} pages',
       quote: 'Quote in chat',
       quoteSelection: 'Quote selection',
       viewTree: 'My drive',
@@ -3653,6 +3768,10 @@ window.__ModuleLoader__.load({
     // kept the whole suite green. The document view is the one a reader spends the
     // most time in, so "no test has ever executed it" is the gap worth closing.
     exports.KDocsPreview = KDocsPreview;
+    // The desktop PDF pane and the shell flag, exported so tests can drive both
+    // directions: web stubs must never mount the pane, a dsh-app: stub must.
+    exports.KDocsPdfPane = KDocsPdfPane;
+    exports.IS_DESKTOP_SHELL = IS_DESKTOP_SHELL;
     exports.KDocsPanelTitle = KDocsPanelTitle;
     exports.kdocsPreviewDefinition = kdocsPreviewDefinition;
     exports.parseMarkdown = parseMarkdown;

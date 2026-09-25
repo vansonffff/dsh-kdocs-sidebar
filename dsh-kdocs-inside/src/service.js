@@ -238,6 +238,21 @@ export class KDocsService extends TypertRemoteService {
     return this.provider.getLink(ref, signal);
   }
 
+  /**
+   * Export a document as a PDF and return its bytes, base64-encoded.
+   *
+   * The desktop shell's 原版 substitute: authenticated by the CLI token end to
+   * end, no web session involved.
+   *
+   * @param {import('./types.js').KDocsFileRef} ref - the document to export.
+   * @param {{ refresh?: boolean }} [options] - `refresh: true` bypasses the cache.
+   * @param {AbortSignal} [signal] - cancels the call.
+   * @returns {Promise<{ base64: string, size: number, exportedAt: string, cached: boolean }>} the PDF payload.
+   */
+  exportPdf(ref, options, signal) {
+    return this.provider.exportPdf(ref, options ?? {}, signal);
+  }
+
   // ── The Remote face, as `remote.kdocs` reaches it ────────────────────────
   //
   // These return the same business values the seam above does. They are separate
@@ -357,6 +372,18 @@ export class KDocsService extends TypertRemoteService {
    */
   async remoteGetLink(ref, signal) {
     return this.provider.getLink(ref, signal);
+  }
+
+  /**
+   * Remote `exportPdf`.
+   *
+   * @param {any} ref - `{ driveId, fileId }`.
+   * @param {any} [options] - `{ refresh?: boolean }`.
+   * @param {AbortSignal} [signal] - cancels the call.
+   * @returns {Promise<any>} the business result.
+   */
+  async remoteExportPdf(ref, options, signal) {
+    return this.provider.exportPdf(ref, options ?? {}, signal);
   }
 
 }

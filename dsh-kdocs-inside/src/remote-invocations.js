@@ -135,6 +135,16 @@ export const KDOCS_INVOCATIONS = [
     valueKind: 'string',
     cancellable: true,
   },
+  {
+    method: 'exportPdf',
+    implementation: 'remoteExportPdf',
+    parameters: [
+      { name: 'ref', kind: 'fileRef' },
+      { name: 'options', kind: 'freeObject', optional: true },
+    ],
+    valueKind: 'freeObject',
+    cancellable: true,
+  },
 ];
 
 /** The npm package name carried in both manifests. */
