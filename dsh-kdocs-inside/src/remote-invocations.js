@@ -180,14 +180,14 @@ export function buildRemoteDescriptors({ parameterSchema, valueSchema }) {
       codec: {
         mode: 'strict',
         typeSymbol: `${KDOCS_PACKAGE}#${namespace}/${invocation.method}:${parameter.name}`,
-        schema: parameterSchema(parameter.kind ?? 'freeObject'),
+        create: () => parameterSchema(parameter.kind ?? 'freeObject'),
       },
     })),
     ...(invocation.cancellable ? { cancellation: { parameter: 'signal' } } : {}),
     result: {
       mode: 'strict',
       typeSymbol: `${KDOCS_PACKAGE}/${namespace}#${invocation.method}:result`,
-      schema: valueSchema(invocation.valueKind),
+      create: () => valueSchema(invocation.valueKind),
     },
   }));
 }

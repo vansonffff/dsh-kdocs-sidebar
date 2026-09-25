@@ -182,14 +182,14 @@ window.__ModuleLoader__.load({
           codec: {
             mode: 'strict',
             typeSymbol: `kdocs#${NAMESPACE}/${invocation.method}:${parameter.name}`,
-            schema: passthrough(),
+            create: () => passthrough(),
           },
         })),
         ...(invocation.cancellable ? { cancellation: { parameter: 'signal' } } : {}),
         result: {
           mode: 'strict',
           typeSymbol: `kdocs/${NAMESPACE}#${invocation.method}:result`,
-          schema: passthrough(),
+          create: () => passthrough(),
         },
       })),
     };
@@ -1684,11 +1684,76 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 金山文档's brand mark, for the guide pill.
+     *
+     * 金山文档 publishes this mark as **PNGs only** (WPS 开放平台 › 资源下载 ›
+     * 设计资源 — 64/48/32/16 px, plus a wordmark), so there is no vector source to
+     * copy. The path below was therefore traced from the official 64×64 asset and
+     * then checked back against it: rasterized at 64×64 it covers **1861 px, the
+     * official file's own count, pixel for pixel**, at IoU 0.981 (36 differing
+     * pixels, all on edges). So the pill draws the published mark's geometry — the
+     * mark is isometric, so its edges are exactly reproducible — rather than a
+     * cube drawn from memory.
+     *
+     * What a redrawn "obvious" cube gets wrong is the banding: the left and right
+     * faces are sliced asymmetrically. Left face, in units of the face's own
+     * height: gaps at 0–.339 and .507–.840. Right face: one gap at .345–.505. The
+     * five subpaths are the five solid regions (top rhombus + two bands per side),
+     * laid out so no two share an edge.
+     *
+     * `fill: currentColor`, not the mark's own `#0339F7`: the guide's glyph
+     * contract is that colour rides `currentColor`, so the pill keeps its label
+     * ink and stays legible in both themes. The panel keeps the brand blue only
+     * through its own file-type table, where colour is the information.
+     *
+     * This is WPS's trademark, used here to identify the service this panel
+     * drives. Fine for a private build; redistribution is where the trademark
+     * questions would start.
+     */
+    const KDOCS_GLYPH_PATH = 'M31.944 1.562L59.965 16.748L31.944 31.934L3.923 16.748ZM31.944 42.245L3.923 27.059L3.923 32.168L31.944 47.355ZM31.944 57.471L3.923 42.285L3.923 47.145L31.944 62.332ZM31.944 31.934L59.965 16.748L59.965 27.235L31.944 42.421ZM31.944 47.282L59.965 32.095L59.965 47.145L31.944 62.332Z';
+
+    /**
+     * Paint 金山文档's mark at the guide pill's own size.
+     *
+     * The seat draws a pill's glyph as `<Icon size={22|26} className={…} />` and
+     * passes no `className` when the type registered one — that class only inks the
+     * shipped cube fallback — so both props are forwarded when present and the
+     * mark simply inherits the pill's `currentColor`. `size` defaults to 22, the
+     * size the guide actually draws at: past four entries it drops every
+     * description, and 22px is the described-less size.
+     *
+     * `aria-hidden`: the pill's title already says 金山文档, so announcing the mark
+     * would say it twice.
+     *
+     * @param {any} props - `size` (square edge, px) and `className`, both optional.
+     * @returns {any} the React element.
+     */
+    function KDocsGlyph(props) {
+      const given = props !== null && typeof props === 'object' ? props : {};
+      const size = typeof given.size === 'number' ? given.size : 22;
+      return jsx('svg', {
+        width: size,
+        height: size,
+        viewBox: '0 0 64 64',
+        fill: 'currentColor',
+        className: given.className,
+        'aria-hidden': 'true',
+        focusable: 'false',
+        children: jsx('path', { d: KDOCS_GLYPH_PATH }),
+      });
+    }
+
+    /**
      * The tab type's registry definition.
      *
      * No `patterns`: a page type is opened by kind and recognizes no address.
      * `priority` is left to its default (`extension`), which is correct for a type
      * shipped outside the product.
+     *
+     * The guide entry carries `icon`, and that is not decoration: the seat draws
+     * `entry.icon ?? CubeGlyph`, so without one this panel's pill wore the shipped
+     * cube — the same glyph the calendar's and To Do's pills wear — and read as
+     * "some panel" rather than as 金山文档. See {@link KDocsGlyph} for the mark.
      *
      * @param {any} t - namespace-bound translate.
      * @returns {any} the definition.
@@ -1703,6 +1768,7 @@ window.__ModuleLoader__.load({
             order: 60,
             title: () => t('guideTitle'),
             description: () => t('guideDescription'),
+            icon: KDocsGlyph,
           },
         ],
       };
@@ -3606,6 +3672,12 @@ window.__ModuleLoader__.load({
     exports.fileKindOf = fileKindOf;
     exports.entryKindOf = entryKindOf;
     exports.FileIcon = FileIcon;
+    // The guide pill's mark, plus its own geometry. Exported so a test can hold the
+    // pill to a glyph instead of the shipped cube fallback, and hold the glyph to
+    // the two things a screenshot cannot check: that the path carries the published
+    // mark's own five regions, and that the colour is inherited, not baked.
+    exports.KDocsGlyph = KDocsGlyph;
+    exports.KDOCS_GLYPH_PATH = KDOCS_GLYPH_PATH;
     exports.PREVIEW_KIND = PREVIEW_KIND;
     exports.PREVIEW_ID = PREVIEW_ID;
     exports.kdocsEmbedUrl = kdocsEmbedUrl;

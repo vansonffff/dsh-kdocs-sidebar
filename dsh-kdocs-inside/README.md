@@ -2,7 +2,7 @@
 
 > 在 DSH 右侧边栏里**浏览、预览、引用**你的金山文档云盘；Agent 也能通过 4 个只读工具直接读正文。
 
-需要 DSH ≥ `0.1.5`（实测于 `0.1.5-rc.1`）· Node ≥ 22.19
+需要 DSH `0.1.7-rc.1`（本地实测）· Node ≥ 22.19
 
 **版本变动请看 [`CHANGELOG.md`](CHANGELOG.md)**；本文件只介绍这个项目本身。
 
@@ -117,7 +117,7 @@ kdocs-cli auth status
 npm install -g @deepseek-ai/dsh
 ```
 
-（DSH 是公开的 npm 包；本插件针对 `0.1.5` 系的客户端接口编写。）
+（DSH 是公开的 npm 包；本地源码已适配 `0.1.7-rc.1` 的 Typert 接口。）
 
 ## 第 3 步：安装本插件
 
@@ -319,10 +319,10 @@ dsh plugin --profile web remove dsh-kdocs-inside
 
 ## 兼容性与版本
 
-- 本插件的客户端半边使用 DSH 在 `0.1.5` 系提供的接口（`remote.kdocs`、`sidebarRightTabs`
-  等），DSH 升级到新 RC 时可能需要同步更新。升级 DSH 前，建议先在另一个 profile 里验证。
+- 本地源码已适配并实测 DSH `0.1.7-rc.1` 的 `remote.kdocs`、`sidebarRightTabs`
+  和 Typert `create()` 描述符。再次升级 DSH 时，建议先在另一个 profile 里验证。
 - 依赖面全部公开可解析：`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-typert-protocol`
-  （`^0.1.5-rc.1`）。
+  （`^0.1.7-rc.1`）。
 - 版本变动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## License
