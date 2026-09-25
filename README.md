@@ -66,21 +66,25 @@ kdocs-cli auth status     # 期望看到 "authenticated": true
 
 ## 安装
 
+**web 端**：
+
 ```bash
-# 右栏面板 + 预览 + 引用 + 工具
+# 右栏面板 + 预览 + 引用 + 工具（npm 最新正式版）
 dsh plugin --profile web add dsh-kdocs-inside
 
 # 设置页里的状态分区（可选）
 dsh plugin --profile web add kdocs-settings
 
+# 装完 / 升级后重启
 dsh web
 ```
 
+也可以在 web 端「设置 → 插件」里填包名安装，效果相同。
 **装完必须重启 `dsh web`，并重新加载浏览器页面。**
 
-装进**官方桌面端**：桌面端 profile 由 Electron 应用独占管理，请在桌面端
-「设置 → 插件」里填包名 `dsh-kdocs-inside` 直接安装（无需克隆本仓库）；
-改动 host 半边后需重启应用。
+**桌面端**（官方 Electron 应用）：profile 由应用独占管理，没有命令行入口——
+在桌面端「设置 → 插件」里填包名 `dsh-kdocs-inside` 直接安装（无需克隆本仓库），
+装完重启应用。
 
 ## 用起来是什么样
 
