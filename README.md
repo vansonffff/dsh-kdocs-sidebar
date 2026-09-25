@@ -36,6 +36,10 @@ Token 由那个 CLI 存进**操作系统的钥匙串** —— 插件从不读取
 
 **1. 装 `kdocs-cli`**（金山办公官方，不是本项目）
 
+两个官方获取入口：**金山文档官方页面**（kdocs.cn / 365.kdocs.cn 的「金山文档 Skill」入口，
+页面内有下载与 Token 指引），或官方仓库
+[kdocs-app/kdocs-skill](https://github.com/kdocs-app/kdocs-skill) 的安装脚本：
+
 ```bash
 # macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/kdocs-app/kdocs-skill/master/scripts/setup.sh -o /tmp/setup.sh && bash /tmp/setup.sh
