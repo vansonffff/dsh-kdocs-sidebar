@@ -7,9 +7,6 @@
 
 **版本变动请看 [`CHANGELOG.md`](CHANGELOG.md)**；本文件只介绍这个项目本身。
 
-本插件是 `dsh-kdocs` 的核心包。仓库里的 `kdocs/` 目录名与包名 `dsh-kdocs-inside`
-不一致是历史原因，包名不再变动。
-
 ---
 
 ## 双端行为一览
@@ -321,7 +318,9 @@ web 端预览 Tab 里的「原版」是 WPS 自己的在线编辑器，你在里
 | `pageSize` | `100` | 每页条数（CLI 允许 1–500） |
 | `exportTimeoutMs` | `90000` | 一次 PDF 导出的上限（含轮询） |
 | `exportPollIntervalMs` | `1500` | 导出结果轮询间隔 |
+| `maxPdfBytes` | `31457280` | 单份导出 PDF 的预览上限（30 MB；超限报错并建议「在金山文档打开」） |
 | `pdfCacheMax` | `20` | 内存里保留的导出 PDF 份数（超出逐出最旧） |
+| `pdfCacheMaxBytes` | `125829120` | 导出 PDF 缓存的总字节预算（120 MB，与份数一起按最旧逐出） |
 
 ---
 

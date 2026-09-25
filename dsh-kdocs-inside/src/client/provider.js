@@ -60,6 +60,8 @@ const DEFAULTS = {
   exportPollIntervalMs: 1_500,
   exportTimeoutMs: 90_000,
   pdfCacheMax: 20,
+  maxPdfBytes: 30 * 1024 * 1024,
+  pdfCacheMaxBytes: 120 * 1024 * 1024,
 };
 
 /**
@@ -73,6 +75,11 @@ const DEFAULTS = {
  * @property {number} [exportPollIntervalMs] - gap between `wps.query-export` polls.
  * @property {number} [exportTimeoutMs] - ceiling for one PDF export, polls included.
  * @property {number} [pdfCacheMax] - exported PDFs kept in memory before the oldest is evicted.
+ * @property {number} [maxPdfBytes] - ceiling for one exported PDF. Bytes cross the Remote as
+ *   base64 inside one message, so an unbounded scan bundle would hit the IPC message size
+ *   and Host memory before pdf.js ever saw it.
+ * @property {number} [pdfCacheMaxBytes] - total byte budget of the PDF cache, enforced
+ *   oldest-first alongside `pdfCacheMax`.
  */
 
 /**
@@ -783,16 +790,65 @@ export class KDocsCliProvider {
         message: `下载导出的 PDF 失败（HTTP ${response.status}）`,
       });
     }
+    // Size guard, before the body is read: bytes cross the Remote as base64 in a
+    // single message, so an unbounded scan bundle would hit the IPC message size
+    // and Host memory long before pdf.js ever saw it. A rejected preview must
+    // say so plainly, not hang the sidebar.
+    const announced = Number(response.headers.get('content-length') ?? 0);
+    if (announced > 0) assertPdfSize(announced, this.options.maxPdfBytes, 'wps.export.download');
     const buffer = Buffer.from(await response.arrayBuffer());
+    assertPdfSize(buffer.length, this.options.maxPdfBytes, 'wps.export.download');
     const result = { base64: buffer.toString('base64'), size: buffer.length, exportedAt: new Date().toISOString() };
 
     this.pdfCache.delete(cacheKey);
     this.pdfCache.set(cacheKey, result);
-    while (this.pdfCache.size > this.options.pdfCacheMax) {
-      const oldest = this.pdfCache.keys().next().value;
-      this.pdfCache.delete(oldest);
-    }
+    trimPdfCache(this.pdfCache, this.options.pdfCacheMax, this.options.pdfCacheMaxBytes);
     return { ...result, cached: false };
+  }
+}
+
+/**
+ * Reject one exported PDF that exceeds the preview budget.
+ *
+ * Exported so the guard is unit-testable without the CLI; `exportPdf` calls it
+ * twice (announced length, then actual bytes).
+ *
+ * @param {number} size - the PDF's byte size.
+ * @param {number} maxBytes - the configured ceiling.
+ * @param {string} operation - the failing operation, for the error.
+ * @returns {void}
+ * @throws {KDocsError} `'unsupported'` with the actual size in the message.
+ */
+export function assertPdfSize(size, maxBytes, operation) {
+  if (size <= maxBytes) return;
+  const mb = (bytes) => (bytes / 1024 / 1024).toFixed(1);
+  throw new KDocsError('unsupported', {
+    operation,
+    message: `导出的 PDF 有 ${mb(size)} MB，超过预览上限 ${mb(maxBytes)} MB——`
+      + '请用「在金山文档打开」查看原文档，或调大 maxPdfBytes',
+  });
+}
+
+/**
+ * Enforce the PDF cache's count and byte budgets, oldest first.
+ *
+ * Exported so the eviction policy is unit-testable; `exportPdf` calls it after
+ * every insert. Map iteration order is insertion order, which is the age order
+ * here because re-inserts delete first.
+ *
+ * @param {Map<string, { size: number }>} cache - the cache to trim.
+ * @param {number} maxCount - entries allowed.
+ * @param {number} maxBytes - total bytes allowed.
+ * @returns {void}
+ */
+export function trimPdfCache(cache, maxCount, maxBytes) {
+  let total = 0;
+  for (const entry of cache.values()) total += entry.size;
+  while (cache.size > maxCount || total > maxBytes) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    total -= cache.get(oldest)?.size ?? 0;
+    cache.delete(oldest);
   }
 }
 
