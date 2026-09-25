@@ -147,7 +147,7 @@ npm install -g @deepseek-ai/dsh
 ## 第 3 步：安装本插件
 
 ```bash
-# 从 npm（推荐，便于升级）
+# 从 npm（推荐，便于升级；DSH 官方命令，add 后接 pnpm 规格的包名/路径）
 dsh plugin --profile web add dsh-kdocs-inside
 
 # 或者本地开发（在插件目录里）
@@ -157,11 +157,14 @@ dsh plugin --profile web add link:$PWD
 dsh web
 ```
 
+也可以用界面：web 端「设置 → 插件」里直接填包名 `dsh-kdocs-inside` 安装，效果相同。
+
 **装完必须重启 `dsh web`，然后在浏览器里重新加载页面。** 插件的 host 半边是在装配时定死的，
 只刷新浏览器不会生效。
 
 **装进官方桌面端**：桌面端 profile 由 Electron 应用独占管理（CLI 会拒绝
-`--profile desktop`），请在桌面端的「设置 → 插件」里按路径安装本包目录。
+`--profile desktop`），请在桌面端的「设置 → 插件」里填包名 `dsh-kdocs-inside`
+直接安装（npm 已有正式版，无需克隆本仓库；本地开发才需要填目录路径）。
 桌面端改了 host 半边后同样需要重启应用。
 
 卸载：
