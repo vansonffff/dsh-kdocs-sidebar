@@ -38,6 +38,7 @@
     "src",
     "client.js",
     "client.pdf.js",
+    "vendor/pdfjs-LICENSE.txt",
     "typert.host.js",
     "typert.remote-client.js",
     "cordis.patch.yml",
