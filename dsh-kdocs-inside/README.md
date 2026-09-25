@@ -70,8 +70,10 @@ profile，与系统浏览器不共享 cookie；实测金山文档的授权接口
 
 ## 第 1 步：安装并登录 kdocs-cli
 
-`kdocs-cli` 是金山办公为 AI Agent 提供的官方工具（参见官方仓库
-[kdocs-app/kdocs-skill](https://github.com/kdocs-app/kdocs-skill)，即「金山文档官方 Skill」）。
+`kdocs-cli` 是金山办公为 AI Agent 提供的官方工具。两个官方获取入口：
+**金山文档官方页面**（kdocs.cn / 365.kdocs.cn 的「金山文档 Skill」入口，页面内有下载与
+Token 指引），或其官方仓库
+[kdocs-app/kdocs-skill](https://github.com/kdocs-app/kdocs-skill) 的 `scripts/` 安装脚本。
 
 **macOS / Linux**
 
