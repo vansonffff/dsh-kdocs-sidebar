@@ -267,7 +267,17 @@ export class KDocsService extends TypertRemoteService {
    * @returns {Promise<any>} the business result.
    */
   async remoteStatus(signal) {
+    this.provider.invalidate();
     return this.provider.status(signal);
+  }
+
+  /**
+   * 自动发现本机 CLI；返回检测值，不保存配置。
+   * @param {AbortSignal} [signal] - 取消检测。
+   * @returns {Promise<any>} CLI 的安装、路径和授权状态。
+   */
+  async remoteDetectCli(signal) {
+    return this.provider.detectCli(signal);
   }
 
   /**

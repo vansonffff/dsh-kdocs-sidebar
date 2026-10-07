@@ -56,6 +56,7 @@
  */
 export const KDOCS_INVOCATIONS = [
   { method: 'status', implementation: 'remoteStatus', parameters: [], valueKind: 'status', cancellable: true },
+  { method: 'detectCli', implementation: 'remoteDetectCli', parameters: [], valueKind: 'status', cancellable: true },
   {
     method: 'list',
     implementation: 'remoteList',

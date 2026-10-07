@@ -25,7 +25,7 @@
 
 import { KDocsError } from '../errors.js';
 import { asRecord, isAbortSignal } from '../internal.js';
-import { LOGIN_TIMEOUT_MS, READ_TIMEOUT_MS, authUrlIn, cliVersion, resolveCli, runAction, runCli } from './cli.js';
+import { LOGIN_TIMEOUT_MS, READ_TIMEOUT_MS, authUrlIn, cliVersion, discoverCli, resolveCli, runAction, runCli } from './cli.js';
 import {
   envelopeMessage,
   toContentFormat,
@@ -51,6 +51,7 @@ const STATUS_TTL_MS = 10_000;
  * @type {Required<KDocsProviderOptions>}
  */
 const DEFAULTS = {
+  cliPath: '',
   defaultTimeoutMs: 60_000,
   readTimeoutMs: READ_TIMEOUT_MS,
   loginTimeoutMs: LOGIN_TIMEOUT_MS,
@@ -66,6 +67,7 @@ const DEFAULTS = {
 
 /**
  * @typedef {object} KDocsProviderOptions
+ * @property {string} [cliPath] - CLI 可执行文件路径。
  * @property {number} [defaultTimeoutMs] - ceiling for ordinary calls.
  * @property {number} [readTimeoutMs] - ceiling for content extraction.
  * @property {number} [loginTimeoutMs] - ceiling for the browser OAuth round trip.
@@ -126,6 +128,36 @@ export class KDocsCliProvider {
     this.pdfCache = new Map();
   }
 
+  /** volatile 路径每次现取；切换路径后清除旧 CLI 的状态和版本。 */
+  getCliPath() {
+    const configured = this.options.cliPath;
+    const path = typeof configured?.get === 'function' ? configured.get() : configured;
+    if (this.activeCliPath !== path) {
+      this.activeCliPath = path;
+      this.statusCache = undefined;
+      this.versionCache = undefined;
+      this.pdfCache.clear();
+    }
+    return path;
+  }
+
+  /** 所有调用共用本实例配置，不改写进程环境或其他插件。 */
+  runCli(argv, options = {}) {
+    return runCli(argv, { ...options, cliPath: this.getCliPath() });
+  }
+
+  /** 业务接口同样使用已保存的 CLI 路径。 */
+  runAction(service, action, params = {}, options = {}) {
+    return runAction(service, action, params, { ...options, cliPath: this.getCliPath() });
+  }
+
+  /** 自动发现本机 CLI，忽略已保存的手工路径，不持久化结果。 */
+  async detectCli(signal) {
+    const path = discoverCli();
+    if (!path) return { cliAvailable: false, authenticated: false, source: 'none', checkedAt: new Date().toISOString(), reason: '未找到可执行的 kdocs-cli，请先按官方指南安装或手工填写路径。' };
+    return new KDocsCliProvider(this.ctx, { ...this.options, cliPath: path }).status(signal);
+  }
+
   /** Drop cached observations, so the next read asks the CLI again. */
   invalidate() {
     this.statusCache = undefined;
@@ -141,15 +173,16 @@ export class KDocsCliProvider {
    * @returns {Promise<import('../types.js').KDocsStatus>} the current status.
    */
   async status(signal) {
+    this.getCliPath();
     const cached = this.statusCache;
     if (cached !== undefined && Date.now() - cached.at < this.options.statusTtlMs) return cached.value;
 
-    const { path } = resolveCli();
+    const { path } = resolveCli(this.getCliPath());
     /** @type {import('../types.js').KDocsStatus} */
     let value;
 
     try {
-      const outcome = await runCli(['auth', 'status'], {
+      const outcome = await this.runCli(['auth', 'status'], {
         signal,
         timeoutMs: 30_000,
         operation: 'auth.status',
@@ -199,7 +232,7 @@ export class KDocsCliProvider {
       if (path !== undefined) value.cliPath = path;
     }
 
-    const version = await cliVersion({ signal });
+    const version = await cliVersion({ signal, cliPath: this.getCliPath() });
     if (version !== undefined) {
       this.versionCache = version;
       value.cliVersion = version;
@@ -229,7 +262,7 @@ export class KDocsCliProvider {
     let sawUrl;
 
     try {
-      await runCli(['auth', 'login'], {
+      await this.runCli(['auth', 'login'], {
         signal,
         timeoutMs: this.options.loginTimeoutMs,
         operation: 'auth.login',
@@ -269,7 +302,7 @@ export class KDocsCliProvider {
    * @returns {Promise<import('../types.js').KDocsStatus>} status after logout.
    */
   async logout(signal) {
-    await runCli(['auth', 'logout'], { signal, timeoutMs: 30_000, operation: 'auth.logout' });
+    await this.runCli(['auth', 'logout'], { signal, timeoutMs: 30_000, operation: 'auth.logout' });
     this.invalidate();
     return this.status(signal);
   }
@@ -293,14 +326,14 @@ export class KDocsCliProvider {
 
     let outcome;
     if (parent === undefined) {
-      outcome = await runAction('drive', 'list-my-files', params, {
+      outcome = await this.runAction('drive', 'list-my-files', params, {
         signal,
         timeoutMs: this.options.defaultTimeoutMs,
       });
     } else {
       params.parent_id = parent.fileId;
       if (parent.driveId !== '') params.drive_id = parent.driveId;
-      outcome = await runAction('drive', 'list-files', params, {
+      outcome = await this.runAction('drive', 'list-files', params, {
         signal,
         timeoutMs: this.options.defaultTimeoutMs,
       });
@@ -344,7 +377,7 @@ export class KDocsCliProvider {
     if (typeof narrowed.startTime === 'number') params.start_time = narrowed.startTime;
     if (typeof narrowed.endTime === 'number') params.end_time = narrowed.endTime;
     if (narrowed.withTotal === true) params.with_total = true;
-    const outcome = await runAction(
+    const outcome = await this.runAction(
       'drive',
       'search-files',
       params,
@@ -373,7 +406,7 @@ export class KDocsCliProvider {
    */
   async stat(locator, signal) {
     const params = locatorParams(locator, 'drive.get-file-info');
-    const outcome = await runAction(
+    const outcome = await this.runAction(
       'drive',
       'get-file-info',
       params,
@@ -423,7 +456,7 @@ export class KDocsCliProvider {
     const params = { page_size: this.options.pageSize, ...source.params };
     if (typeof cursor === 'string' && cursor !== '') params.page_token = cursor;
 
-    const outcome = await runAction('drive', source.action, params, {
+    const outcome = await this.runAction('drive', source.action, params, {
       signal,
       timeoutMs: this.options.defaultTimeoutMs,
     });
@@ -449,7 +482,7 @@ export class KDocsCliProvider {
    */
   async listVersions(ref, signal) {
     requireRef(ref, 'drive.list-file-versions');
-    const outcome = await runAction(
+    const outcome = await this.runAction(
       'drive',
       'list-file-versions',
       { file_id: ref.fileId, page_size: this.options.pageSize },
@@ -495,7 +528,7 @@ export class KDocsCliProvider {
    */
   async listComments(ref, signal) {
     requireRef(ref, 'drive.get-file-inline-comments');
-    const outcome = await runAction(
+    const outcome = await this.runAction(
       'drive',
       'get-file-inline-comments',
       { file_id: ref.fileId },
@@ -565,7 +598,7 @@ export class KDocsCliProvider {
     const alreadyHasIt = extension !== '' && requested.toLowerCase().endsWith(`.${extension.toLowerCase()}`);
     const dstName = extension === '' || alreadyHasIt ? requested : `${requested}.${extension}`;
 
-    await runAction(
+    await this.runAction(
       'drive',
       'rename-file',
       { file_id: ref.fileId, dst_name: dstName },
@@ -611,7 +644,7 @@ export class KDocsCliProvider {
       };
     }
 
-    const outcome = await runAction('drive', 'read-file', params, {
+    const outcome = await this.runAction('drive', 'read-file', params, {
       signal,
       timeoutMs: this.options.readTimeoutMs,
     });
@@ -681,7 +714,7 @@ export class KDocsCliProvider {
    */
   async getLink(ref, signal) {
     requireRef(ref, 'drive.get-file-link');
-    const outcome = await runAction(
+    const outcome = await this.runAction(
       'drive',
       'get-file-link',
       { file_id: ref.fileId },
@@ -728,7 +761,7 @@ export class KDocsCliProvider {
     const cached = this.pdfCache.get(cacheKey);
     if (cached !== undefined && options.refresh !== true) return { ...cached, cached: true };
 
-    const exported = await runAction('wps', 'export', { file_id: ref.fileId, format: 'pdf' }, {
+    const exported = await this.runAction('wps', 'export', { file_id: ref.fileId, format: 'pdf' }, {
       signal,
       timeoutMs: this.options.defaultTimeoutMs,
     });
@@ -745,6 +778,8 @@ export class KDocsCliProvider {
     const deadline = Date.now() + this.options.exportTimeoutMs;
     /** @type {string | undefined} */
     let downloadUrl;
+    /** Consecutive polls that said "finished" without carrying a payload. */
+    let emptyFinished = 0;
     for (;;) {
       if (signal?.aborted) {
         throw new KDocsError('aborted', { operation: 'wps.query-export', message: '导出已取消' });
@@ -757,7 +792,7 @@ export class KDocsCliProvider {
         });
       }
       await sleep(this.options.exportPollIntervalMs, signal);
-      const polled = await runAction('wps', 'query-export', { format: 'pdf', task_id: taskId, task_type: taskType }, {
+      const polled = await this.runAction('wps', 'query-export', { format: 'pdf', task_id: taskId, task_type: taskType }, {
         signal,
         timeoutMs: this.options.defaultTimeoutMs,
       });
@@ -765,8 +800,30 @@ export class KDocsCliProvider {
       const status = typeof polledPayload.status === 'string' ? polledPayload.status : '';
       const inner = asRecord(polledPayload.data);
       if (status === 'finished' || inner.result === 'ok') {
-        downloadUrl = typeof inner.url === 'string' && inner.url !== '' ? inner.url : undefined;
-        break;
+        const url = typeof inner.url === 'string' && inner.url !== '' ? inner.url : undefined;
+        if (url !== undefined) {
+          downloadUrl = url;
+          break;
+        }
+        // `finished` promises nothing about the payload. Measured 2026-10-04
+        // against kdocs-cli 2.7.1, in both directions:
+        //
+        // - a transient gap: the same task answered `{status:'finished', data:{}}`
+        //   on one poll and carried `url` on the next — so one empty answer means
+        //   "not yet";
+        // - a permanent one: when the document is **itself** a PDF, every poll
+        //   answers that way forever, because there is nothing to convert. The
+        //   original file cannot stand in for it either: `drive download-file`
+        //   returns an *authenticated* storage URL (`ksc-bj.ag.wps.cn/api/object/…`,
+        //   403 to a bare fetch), and this Provider never touches the user's token.
+        //
+        // So the second empty answer ends the loop with an explanation, rather
+        // than failing on the first (what 0.4.0–0.4.2 did — that is the
+        // 「导出完成但 kdocs-cli 未返回下载地址」 the reader saw) or waiting out the
+        // whole export timeout for an answer that is not coming.
+        emptyFinished += 1;
+        if (emptyFinished >= 2) break;
+        continue;
       }
       if (status === 'failed' || status === 'error') {
         throw new KDocsError('cli-failed', {
@@ -779,7 +836,9 @@ export class KDocsCliProvider {
     if (downloadUrl === undefined) {
       throw new KDocsError('malformed-response', {
         operation: 'wps.query-export',
-        message: '导出完成但 kdocs-cli 未返回下载地址',
+        message: '金山文档的导出任务已完成，但没有给出下载地址——'
+          + '这类文档（例如本身就是 PDF 的文件）没有可导出的 PDF，'
+          + '请改用「文本」模式读正文，或点「在金山文档打开」查看原文档',
       });
     }
 
@@ -798,6 +857,15 @@ export class KDocsCliProvider {
     if (announced > 0) assertPdfSize(announced, this.options.maxPdfBytes, 'wps.export.download');
     const buffer = Buffer.from(await response.arrayBuffer());
     assertPdfSize(buffer.length, this.options.maxPdfBytes, 'wps.export.download');
+    // The renderer is about to be handed these bytes and told they are a PDF.
+    // Check before pdf.js has to: an exported PDF is one by construction, but an
+    // error page served with 200 would otherwise arrive as an unreadable document.
+    if (buffer.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      throw new KDocsError('unsupported', {
+        operation: 'wps.export.download',
+        message: '下载回来的内容不是 PDF，无法预览——请点「在金山文档打开」查看原文档',
+      });
+    }
     const result = { base64: buffer.toString('base64'), size: buffer.length, exportedAt: new Date().toISOString() };
 
     this.pdfCache.delete(cacheKey);

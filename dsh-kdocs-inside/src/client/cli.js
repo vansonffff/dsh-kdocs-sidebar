@@ -20,9 +20,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, accessSync, constants, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 
 import { KDocsError, classifyUpstreamCode, retryDelayMs } from '../errors.js';
 import { unwrapData } from './parse.js';
@@ -82,7 +82,15 @@ const AUTH_URL_PATTERN = /https?:\/\/[^\s"'<>]+/;
  *
  * @returns {{ command: string, path?: string }} the command to spawn, plus its absolute path when known.
  */
-export function resolveCli() {
+export function resolveCli(cliPath = '') {
+  // 显式路径优先，作为单个可执行文件传给 spawn，不经 shell。
+  if (typeof cliPath !== 'string' || /[\u0000-\u001f\u007f]/.test(cliPath)) {
+    throw new TypeError('CLI 路径必须是文本且不能包含控制字符');
+  }
+  if (cliPath.trim()) {
+    const candidate = cliPath.trim();
+    return { command: candidate, path: existsSync(candidate) ? candidate : undefined };
+  }
   const envDir = process.env.KDOCS_CLI_DIR;
   if (envDir !== undefined && envDir !== '') {
     const candidate = join(envDir, process.platform === 'win32' ? 'kdocs-cli.exe' : 'kdocs-cli');
@@ -96,6 +104,25 @@ export function resolveCli() {
     if (existsSync(candidate)) return { command: candidate, path: candidate };
   }
   return { command: 'kdocs-cli' };
+}
+
+/** 只查找可执行文件，不调用 shell，也不改写用户配置。 */
+export function discoverCli() {
+  const binary = process.platform === 'win32' ? 'kdocs-cli.exe' : 'kdocs-cli';
+  const folders = [
+    process.env.KDOCS_CLI_DIR,
+    process.platform === 'win32' ? join(homedir(), 'AppData', 'Local', 'kdocs-cli') : join(homedir(), '.local', 'bin'),
+    ...(process.env.PATH ?? '').split(delimiter),
+  ].filter(Boolean);
+  for (const folder of folders) {
+    const candidate = join(folder, binary);
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
+      return candidate;
+    } catch { /* 不存在或不可执行时继续查找。 */ }
+  }
+  return undefined;
 }
 
 /**
@@ -193,6 +220,7 @@ function firstLine(text) {
  *
  * @param {string[]} argv - arguments after the binary, e.g. `['drive', 'list-my-files', '{}']`.
  * @param {object} [options] - invocation options.
+ * @param {string} [options.cliPath] - CLI 可执行文件路径，留空自动查找。
  * @param {AbortSignal} [options.signal] - cancels the child process.
  * @param {number} [options.timeoutMs] - ceiling for the whole call.
  * @param {number} [options.maxStdoutBytes] - ceiling on captured stdout.
@@ -205,7 +233,7 @@ export function runCli(argv, options = {}) {
   const operation = options.operation ?? argv.slice(0, 2).join(' ');
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxStdoutBytes = options.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES;
-  const { command } = resolveCli();
+  const { command } = resolveCli(options.cliPath);
 
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted === true) {
@@ -312,7 +340,7 @@ export function runCli(argv, options = {}) {
         code === 'ENOENT'
           ? new KDocsError('cli-not-installed', {
               operation,
-              message: `未找到 kdocs-cli（${command}）；请安装后重试，或设置 KDOCS_CLI_DIR 指向其所在目录`,
+              message: `未找到 kdocs-cli（${command}）；请安装后重试，或在插件配置页填写 CLI 完整路径`,
               cause: error,
             })
           : new KDocsError('cli-failed', { operation, message: firstLine(String(error.message)), cause: error }),

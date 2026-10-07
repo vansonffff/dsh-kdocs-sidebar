@@ -18,7 +18,7 @@
 |---|---|---|
 | 右栏面板 / 文件树 / 搜索 | ✅ 一致 | ✅ 一致 |
 | 「文本」预览（CLI 抽取正文） | ✅ 一致 | ✅ 一致 |
-| **「原版」预览** | 内嵌金山文档**在线编辑器**（iframe，可读可编辑），直接使用浏览器里已有的金山文档登录态 | **PDF 导出预览**（只读）：Host 用 kdocs-cli 导出 PDF，插件内置 pdf.js 渲染，逐页 canvas + 缩放 |
+| **「原版」预览** | 内嵌金山文档**在线编辑器**（iframe，可读可编辑），直接使用浏览器里已有的金山文档登录态 | **PDF 导出预览**（只读）：Host 用 kdocs-cli 导出 PDF，渲染交给 `dsh-pdf-viewer`（虚拟化分页 + 文本层，可直接划选引用） |
 | 编辑文档 | 直接在预览里编辑 | 点「在金山文档打开」，跳系统浏览器编辑 |
 | 依赖的登录态 | 浏览器里的金山文档 web 会话 | kdocs-cli 的 Token（系统密钥链），与网页登录无关 |
 
@@ -64,6 +64,18 @@ profile，与系统浏览器不共享 cookie；实测金山文档的授权接口
 > 桌面端不需要——它走 CLI Token。
 
 ---
+
+## 插件配置页
+
+打开 DSH 左栏「插件」→「dsh-kdocs-inside」，即可配置金山文档 CLI：
+
+- **CLI 可执行文件路径**：填写完整路径，无需引号或参数；留空依次使用 `KDOCS_CLI_DIR`、默认安装位置和 `PATH`。
+- **自动检测**：查找 `KDOCS_CLI_DIR`、默认安装目录及 `PATH` 中可执行的 CLI，填入候选路径；使用者点击保存后生效。
+- **保存配置**：由 DSH 官方配置表单持久化；保存后路径即时生效。
+- **检测连接**：显示 CLI 安装、版本、调用路径和登录状态。
+- **官方帮助**：[使用文档](https://github.com/kdocs-app/kdocs-skill/blob/master/SKILL.md)、[安装指南](https://github.com/kdocs-app/kdocs-skill/tree/master/scripts)、[登录与认证](https://github.com/kdocs-app/kdocs-skill/blob/master/references/auth.md)。
+
+安装和登录仍通过官方 CLI 完成，页面提供 `kdocs-cli auth login` 与 `kdocs-cli auth status` 指引，凭据由 CLI 保存在系统密钥链。配置页需宿主提供 `configForms`，并支持 volatile 配置字段（已在桌面端 0.2.0-rc.2 接入）。
 
 ## 第 1 步：安装并登录 kdocs-cli
 
@@ -113,7 +125,7 @@ kdocs-cli auth set-token -
 ```
 
 （官方文档要求 Token 不得出现在对话、日志、命令输出或任何文件里；本插件遵守这条，
-所以 DSH 里也没有任何界面能显示 Token 明文 —— 包括可选的 `kdocs-settings` 状态面板。）
+所以插件配置页不会显示 Token 明文 —— 包括可选的 `kdocs-settings` 状态面板。）
 
 ### 自检
 
@@ -186,8 +198,8 @@ dsh plugin --profile web remove dsh-kdocs-inside
 |---|---|
 | **右栏面板** | 「金山文档」文件树：我的云文档 / 星标 / 最近 / 共享给我 / 我分享的 / 回收站，逐层懒加载、可搜索、可加载更多 |
 | **预览 Tab（web）** | 默认内嵌 **WPS 原版在线编辑器**，可切「文本」模式读抽取正文 |
-| **预览 Tab（桌面端）** | 「原版」为 **PDF 导出预览**（pdf.js 渲染、缩放、逐页）；「文本」模式与 web 一致 |
-| **引用到对话** | 预览里「引用到对话」或划选后「引用选中片段」→ 输入框写入 `dsh-resource://kdocs/file/<driveId>/<fileId>` |
+| **预览 Tab（桌面端）** | 「原版」为 **PDF 导出预览**：渲染由 `dsh-pdf-viewer` 提供（只渲染视口附近页面、离开即回收，文字层可划选）；「文本」模式与 web 一致 |
+| **引用到对话** | 预览里「引用到对话」或划选后「引用选中片段」（**PDF 里也能直接划选**，文字层是真 DOM 文本）→ 输入框写入 `dsh-resource://kdocs/file/<driveId>/<fileId>` |
 | **手动重命名** | 在 Sidebar 里由你主动触发，用于人工版本管理（见下文） |
 | **Agent 工具** | `kdocs_list` / `kdocs_search` / `kdocs_stat` / `kdocs_read` —— **四个全是只读** |
 | **资源地址** | `dsh-resource://kdocs/…`，DSH 里任何认这个地址的位置都能直接引用 |
@@ -357,12 +369,22 @@ web 端预览 Tab 里的「原版」是 WPS 自己的在线编辑器，你在里
 
 ## 测试
 
-本包以**发布镜像**的形式托管：仓库里只有插件本体（`client.js`、`client.pdf.js`、`src/`、
+本包以**发布镜像**的形式托管：仓库里只有插件本体（`client.js`、`src/`、
 配置与文档），**不含测试套件与开发过程记录** —— 它们留在开发工作区，不随包、也不随仓库发布。
 
 如果你要在本地验证这个插件，最直接的方式是把它装进一个 DSH profile，
 然后在右栏打开「金山文档」面板：面板能列出你的云盘，就说明 CLI、凭据、
 资源协议与 Host 半边这条链路都是通的。
+
+> **桌面端 PDF 预览需要 `dsh-pdf-viewer`**（2026-10-04 起）。渲染不再由本包内置：
+> pdf.js、分页虚拟化与文字层都在那个包里，本包只负责「取字节」（CLI 导出）与
+> 「引用选区」。缺少它时 PDF 面板会明确写出要装哪个插件，不会静默降级或白屏。
+>
+> **金山 PDF 云文档在桌面端「原版」拿不到导出地址**（实测样本 `新案件.pof`：每次查询都
+> `finished` + 空载荷；原文件的下载地址又需要登录凭证，本插件不读取、不转发你的 token）。
+> 这种情况下面板会在几秒内说明原因，并指向两条可行路径 —— 「文本」模式（可读正文，
+> **一样可以划选引用**）或「在金山文档打开」。真正的 `.pdf` 尚未取得样本验证，面板按 CLI
+> 的实际回答处理，不做猜测。
 
 ---
 
@@ -373,9 +395,9 @@ web 端预览 Tab 里的「原版」是 WPS 自己的在线编辑器，你在里
   再次升级 DSH 时，建议先在另一个 profile 里验证。
 - 依赖面全部公开可解析：`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-typert-protocol`
   （`^0.1.7-rc.1`）。
-- 桌面端 PDF 渲染使用内置的 [pdf.js](https://github.com/mozilla/pdf.js) v3.11.174
-  （Apache-2.0，见 `vendor/pdfjs-LICENSE.txt`），仅在桌面端首次打开预览时懒加载；
-  web 端不会下载它。
+- 桌面端 PDF 渲染使用 [pdf.js](https://github.com/mozilla/pdf.js) v3.11.174（Apache-2.0，
+  vendored **在 `dsh-pdf-viewer` 内**，见该包 `vendor/pdfjs-LICENSE.txt`），
+  仅在首次打开 PDF 预览时懒加载；web 端不会下载它，本包自身也不再携带 pdf.js。
 - 版本变动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## License

@@ -54,6 +54,8 @@ export const inject = ['typert'];
  * the plugin without configuration cannot hang a Tab on a 40 MB spreadsheet.
  */
 export const Config = Schema.object({
+  /** CLI 完整路径；留空沿用环境变量、默认安装位置和 PATH。 */
+  cliPath: Schema.string().default('').volatile(),
   /** Ceiling for ordinary calls such as listing, searching, and statting. */
   defaultTimeoutMs: Schema.number().default(60_000),
   /** Ceiling for content extraction, which is materially slower than metadata. */
@@ -82,6 +84,10 @@ export const Config = Schema.object({
  */
 export function apply(ctx, config = {}) {
   const service = new KDocsService(ctx, config);
+  // 自定义插件配置页；表单读写继续由官方 settings 服务管理。
+  ctx.inject(['settings'], (scoped) => {
+    scoped.effect(() => scoped.settings.configure({ auto: false }, ctx.fiber), 'kdocs: own config page');
+  });
   ctx.logger?.debug?.(
     `kdocs: registered ctx.${KDOCS_SERVICE_NAME} backed by the kdocs-cli provider, exposed as remote.${KDOCS_SERVICE_NAME}`,
   );

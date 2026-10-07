@@ -149,6 +149,7 @@ window.__ModuleLoader__.load({
      */
     const INVOCATIONS = [
       { method: 'status', implementation: 'remoteStatus', parameters: [], cancellable: true },
+      { method: 'detectCli', implementation: 'remoteDetectCli', parameters: [], cancellable: true },
       {
         method: 'list',
         implementation: 'remoteList',
@@ -782,6 +783,57 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The PDF renderer, once the `dsh-pdf-viewer` plugin is in the composition.
+     *
+     * Rendering a PDF is not this package's business any more: pdf.js, the page
+     * strip and the text layer live in one place so that a page carries one copy
+     * of all three however many plugins preview a PDF. What this package owns is
+     * *getting the bytes* (the CLI export) and *quoting what the reader selects*.
+     *
+     * The handle is a module-scope cell plus subscribers rather than a slot prop
+     * because the service may arrive after the tab is already open: a prop would
+     * freeze the first answer, and the first answer is legitimately "not yet".
+     */
+    let pdfViewerService;
+    /** Bodies waiting to hear when the renderer arrives or goes away. */
+    const pdfViewerSubscribers = new Set();
+
+    /**
+     * Publish (or withdraw) the renderer to every open body.
+     *
+     * Called by the `pdfViewer` inject below. Exported because a test that cannot
+     * put the composition into the state it asserts on would have to reach into
+     * the subscriber set — and then it would be testing its own stub rather than
+     * this path.
+     *
+     * @param {any} service - the renderer service, or `undefined` to withdraw it.
+     * @returns {void}
+     */
+    function publishPdfViewer(service) {
+      pdfViewerService = service;
+      for (const listener of pdfViewerSubscribers) listener(service);
+    }
+
+    /**
+     * Subscribe one body to the renderer service.
+     *
+     * @returns {any} the service, or `undefined` while `dsh-pdf-viewer` is absent.
+     */
+    function usePdfViewerService() {
+      const [service, setService] = useState(pdfViewerService);
+      useEffect(() => {
+        pdfViewerSubscribers.add(setService);
+        // Between the first render and this effect the service may have arrived:
+        // re-reading closes that window instead of waiting for the next change.
+        setService(pdfViewerService);
+        return () => {
+          pdfViewerSubscribers.delete(setService);
+        };
+      }, []);
+      return service;
+    }
+
+    /**
      * The desktop shell's 原版 body: the document rendered from its exported PDF.
      *
      * Two lazy things happen on mount: the Host exports and downloads the PDF
@@ -798,25 +850,33 @@ window.__ModuleLoader__.load({
      */
     function KDocsPdfPane(props) {
       const { fileRef, remote, t, nonce, signal } = props;
+      const viewer = usePdfViewerService();
       const [state, setState] = useState({ status: 'loading', error: undefined, bytes: undefined, Viewer: undefined });
 
       useEffect(() => {
         let cancelled = false;
+        // Without a renderer there is nothing worth exporting; the render below
+        // draws the sentence that says which plugin is missing.
+        if (viewer === undefined) {
+          return () => {
+            cancelled = true;
+          };
+        }
         setState({ status: 'loading', error: undefined, bytes: undefined, Viewer: undefined });
         void (async () => {
           try {
-            const [result, chunk] = await Promise.all([
+            const [result, Viewer] = await Promise.all([
               remote.exportPdf(fileRef, { refresh: nonce > 0 }, signal).then(unwrapResult),
-              // The loader resolves package-local chunks against this bundle's own
-              // row — the file ships in the package but is served on demand.
-              require.async('./client.pdf.js'),
+              // pdf.js rides the renderer's own lazy chunk, so the page downloads
+              // it once however many plugins preview a PDF.
+              viewer.load(),
             ]);
             if (cancelled) return;
             if (result.ok !== true) {
               setState({ status: 'error', error: result.error?.message ?? t('pdfLoadFailed'), bytes: undefined, Viewer: undefined });
               return;
             }
-            setState({ status: 'ready', error: undefined, bytes: base64ToBytes(result.value.base64), Viewer: chunk.KDocsPdfViewer });
+            setState({ status: 'ready', error: undefined, bytes: base64ToBytes(result.value.base64), Viewer });
           } catch (error) {
             // An aborted call is the tab closing or reloading, not a failure.
             if (cancelled || signal?.aborted) return;
@@ -827,16 +887,30 @@ window.__ModuleLoader__.load({
           cancelled = true;
         };
         // `signal` is not referentially stable (the read effect above learned this
-        // the hard way): the work is keyed by the document and the reload nonce.
-      }, [fileRef, nonce]);
+        // the hard way), and neither is `fileRef`: `KDocsPreview` rebuilds it with
+        // `parseKDocsAddress(address)` on **every** render. Listing the object here
+        // made any unrelated re-render — writing a quote into the composer is one —
+        // drop the bytes and the renderer, so the pane blanked and redrew: the
+        // flicker reported from the desktop app. The document's identity is the two
+        // strings, not the object that carries them.
+      }, [fileRef?.driveId, fileRef?.fileId, nonce, viewer]);
 
-      if (state.status === 'ready' && state.Viewer !== undefined && state.bytes !== undefined) {
+      // "No renderer in this composition" is a fact about the composition, not a
+      // state the export can produce — deciding it during render is what keeps the
+      // first paint honest instead of showing "loading" for something that will
+      // never load.
+      const paneStatus = viewer === undefined ? 'missing' : state.status;
+      if (paneStatus === 'ready' && state.Viewer !== undefined && state.bytes !== undefined) {
         return jsx(state.Viewer, { bytes: state.bytes, t });
       }
+      // eslint-disable-next-line no-nested-ternary -- three states, three sentences
+      const notice = paneStatus === 'missing'
+        ? t('pdfViewerMissing')
+        : (paneStatus === 'loading' ? t('pdfLoading') : (state.error ?? t('pdfLoadFailed')));
       return jsx('div', {
-        'data-kdocs-pdf-pane': state.status,
+        'data-kdocs-pdf-pane': paneStatus,
         style: { flex: '1 1 auto', minHeight: '0', padding: '14px 12px', fontSize: '12.5px', color: 'var(--dsw-alias-label-secondary)', overflow: 'auto' },
-        children: state.status === 'loading' ? t('pdfLoading') : (state.error ?? t('pdfLoadFailed')),
+        children: notice,
       });
     }
 
@@ -1169,13 +1243,23 @@ window.__ModuleLoader__.load({
           header,
           // eslint-disable-next-line no-nested-ternary -- the three-way shell/mode split is the point
           embedding ? embedArea : (pdfPreview
-            ? jsx(KDocsPdfPane, {
+            // The PDF body carries the same selection handler the text body does,
+            // and that is the whole reason the renderer grew a text layer: the
+            // words over the canvas are real DOM text, so `window.getSelection()`
+            // returns a clause the reader dragged across — no view switch, and the
+            // marker it produces is byte-for-byte the one text mode produces.
+            ? jsx('div', {
               key: 'pdfArea',
-              fileRef: ref,
-              remote: props.remote,
-              t,
-              nonce,
-              signal: tab.signal,
+              'data-kdocs-pdf-area': 'true',
+              onMouseUp: onReaderMouseUp,
+              style: { flex: '1 1 auto', minHeight: '0', display: 'flex', flexDirection: 'column' },
+              children: jsx(KDocsPdfPane, {
+                fileRef: ref,
+                remote: props.remote,
+                t,
+                nonce,
+                signal: tab.signal,
+              }),
             })
             : scrollArea),
           // Fixed-positioned, so it floats over the reader wherever the selection
@@ -1269,6 +1353,7 @@ window.__ModuleLoader__.load({
       embedReload: '刷新「原版」',
       pdfLoading: '正在生成 PDF 预览（首次需要几秒导出）…',
       pdfLoadFailed: 'PDF 预览加载失败',
+      pdfViewerMissing: 'PDF 预览需要 dsh-pdf-viewer 插件：请先安装并启用它，然后重新打开本页签',
       pdfPages: '共 {pages} 页',
       quote: '引用到对话',
       quoteSelection: '引用选中片段',
@@ -1342,6 +1427,7 @@ window.__ModuleLoader__.load({
       embedReload: 'Reload Original view',
       pdfLoading: 'Generating the PDF preview (the first export takes a few seconds)…',
       pdfLoadFailed: 'The PDF preview failed to load',
+      pdfViewerMissing: 'The PDF preview needs the dsh-pdf-viewer plugin — install and enable it, then reopen this tab',
       pdfPages: '{pages} pages',
       quote: 'Quote in chat',
       quoteSelection: 'Quote selection',
@@ -2278,11 +2364,20 @@ window.__ModuleLoader__.load({
       const open = options.expanded[key] === true;
       const [hover, setHover] = react.useState(false);
 
+      // The row whose context menu is open is the one the reader is operating on, so
+      // it keeps the hover surface even though the pointer is by then on the menu
+      // rather than on the row. Without this the highlight vanished the moment the
+      // row was right-clicked — the pointer never lingers on a row once a menu is up,
+      // and a state that is only ever true "while the pointer is on me" cannot
+      // express "this menu belongs to me".
+      const active = options.menuKey !== undefined && options.menuKey === key;
+      const highlighted = hover || active;
+
       // The quick menu is a progressive enhancement, not a second way to operate a
       // file: it appears on hover or keyboard focus, calls the same handler the
       // right-click does, and is not rendered at all when the panel has no menu
       // (search results and the curated views pass none).
-      const showQuickMenu = options.onMenu !== undefined && hover;
+      const showQuickMenu = options.onMenu !== undefined && highlighted;
 
       // Children are passed as a prop, never as the variadic third argument: the
       // real jsx runtime dropped them that way and rows committed with no content.
@@ -2297,6 +2392,9 @@ window.__ModuleLoader__.load({
             type: 'button',
             title: entry.name,
             'data-kdocs-row': isFolder ? 'folder' : 'file',
+            // Which row a gesture belongs to is invisible once several rows are on
+            // screen; this is the same diagnostic surface the rest of the panel keeps.
+            'data-kdocs-row-active': active ? 'true' : undefined,
             'aria-expanded': isFolder ? (open ? 'true' : 'false') : undefined,
             onClick: () => (isFolder ? options.onToggle(entry, key) : options.onOpen(entry)),
             // The row only reports the gesture; what the menu offers is the panel's
@@ -2311,7 +2409,7 @@ window.__ModuleLoader__.load({
             onMouseLeave: () => setHover(false),
             onFocus: () => setHover(true),
             onBlur: () => setHover(false),
-            style: hover ? { ...ROW_STYLE, background: 'var(--dsw-alias-interactive-bg-hover)' } : ROW_STYLE,
+            style: highlighted ? { ...ROW_STYLE, background: 'var(--dsw-alias-interactive-bg-hover)' } : ROW_STYLE,
             children: [
               jsx('span', {
                 key: 'chevron',
@@ -2910,6 +3008,56 @@ window.__ModuleLoader__.load({
         panelMemory.query = state.query;
       }, [state.expanded, state.query]);
 
+      // How the context menu is dismissed.
+      //
+      // This replaced a full-screen `position: fixed; inset: 0` catcher. That layer
+      // was a working click target and a lying one: it took the pointer off the row,
+      // so the row received `mouseleave` the instant its own menu opened — the grey
+      // fill and the `···` action disappeared *because* the reader right-clicked
+      // (reproduced in Chromium with real mouse input before this changed) — and no
+      // other row in the panel could be hovered while a menu was up. A document
+      // listener owns the dismissal without occupying the pointer:
+      //
+      // - the press that dismisses is still swallowed, which is what keeps "close the
+      //   menu" from also activating whatever sat underneath it;
+      // - a press inside the menu is left alone, so its items still run;
+      // - Escape closes it, which the catcher never offered;
+      // - a right-click on another row hands over to that row's own menu instead of
+      //   being eaten by the layer.
+      useEffect(() => {
+        if (menu === undefined) return undefined;
+        /** Whether the event happened inside the menu itself. */
+        const insideMenu = (event) => typeof event.target?.closest === 'function'
+          && event.target.closest('[data-kdocs-menu]') !== null;
+        const onDocumentClick = (event) => {
+          if (insideMenu(event)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setMenu(undefined);
+        };
+        const onDocumentContextMenu = (event) => {
+          if (insideMenu(event)) return;
+          // A right-click on a row opens that row's own menu (its handler replaces
+          // this one); anywhere else there is nothing to open, so the platform menu
+          // stays suppressed exactly as the catcher suppressed it.
+          const onRow = typeof event.target?.closest === 'function'
+            && event.target.closest('[data-kdocs-row]') !== null;
+          if (!onRow) event.preventDefault();
+          setMenu(undefined);
+        };
+        const onDocumentKeyDown = (event) => {
+          if (event.key === 'Escape') setMenu(undefined);
+        };
+        document.addEventListener('click', onDocumentClick, true);
+        document.addEventListener('contextmenu', onDocumentContextMenu, true);
+        document.addEventListener('keydown', onDocumentKeyDown, true);
+        return () => {
+          document.removeEventListener('click', onDocumentClick, true);
+          document.removeEventListener('contextmenu', onDocumentContextMenu, true);
+          document.removeEventListener('keydown', onDocumentKeyDown, true);
+        };
+      }, [menu]);
+
       // The root listing opens with the tab; `signal` cancels it when the tab closes.
       useEffect(() => {
         if (signal.aborted) return;
@@ -3004,6 +3152,11 @@ window.__ModuleLoader__.load({
       const showingView = !searching && state.view !== 'tree';
       const activeView = state.views[state.view];
 
+      // Which row the open menu belongs to, in the same key shape the rows use. Every
+      // row is told, so the one that owns the menu can hold the hover surface while
+      // the pointer is on the menu — see `EntryRow`'s `active`.
+      const menuKey = menu === undefined ? undefined : folderKey(menu.entry.ref);
+
       /** Render a level's rows, recursing into expanded folders. */
       const renderLevel = (key, entries, depth) => {
         const nodes = [];
@@ -3016,6 +3169,7 @@ window.__ModuleLoader__.load({
             key: childKey,
             entry,
             onMenu: openMenu,
+            menuKey,
             expanded: state.expanded,
             onToggle,
             onOpen,
@@ -3065,6 +3219,7 @@ window.__ModuleLoader__.load({
               key: `${folderKey(entry.ref)}:${String(index)}`,
               entry,
               onMenu: openMenu,
+              menuKey,
               expanded: {},
               onToggle,
               onOpen,
@@ -3107,6 +3262,7 @@ window.__ModuleLoader__.load({
             key: folderKey(entry.ref) + String(index),
             entry,
             onMenu: openMenu,
+            menuKey,
             expanded: {},
             onToggle,
             onOpen,
@@ -3280,17 +3436,14 @@ window.__ModuleLoader__.load({
           // The menu, the detail sheet and the rename draft all float above the
           // list. `position: fixed` puts them outside the scroll container, so a
           // long tree cannot clip them.
-          menu === undefined
-            ? null
-            : jsx('div', {
-              key: 'menuBackdrop',
-              'data-kdocs-menu-backdrop': 'true',
-              // A full-screen catcher: the menu closes on the next click anywhere,
-              // which is the behaviour a context menu is expected to have.
-              onClick: () => setMenu(undefined),
-              onContextMenu: (event) => { event.preventDefault(); setMenu(undefined); },
-              style: { position: 'fixed', inset: 0, zIndex: 49 },
-            }),
+          //
+          // There is deliberately no full-screen catcher element behind the menu.
+          // There was, and it cost the row its own hover state the moment the menu
+          // opened: the layer became the element under the pointer, the row received
+          // `mouseleave`, and the grey fill plus the `···` action vanished *because*
+          // the reader right-clicked. Dismissal is owned by the document listener
+          // above instead; it swallows the dismissing press without occupying the
+          // pointer.
           menu === undefined
             ? null
             : jsxs('div', {
@@ -3332,10 +3485,20 @@ window.__ModuleLoader__.load({
                   },
                   style: { ...SEARCH_STYLE, marginBottom: '6px' },
                 }),
-                jsx('div', { key: 'actions', style: { display: 'flex', gap: SPACE.sm } },
-                  jsx('button', { key: 'ok', type: 'button', 'data-kdocs-rename-commit': 'true', disabled: menuBusy, onClick: () => void commitRename(), style: { ...HEADER_ACTION_STYLE, textAlign: 'left', padding: `${SPACE.xs} ${SPACE.md}`, font: 'inherit', width: 'auto', border: '0.5px solid var(--dsw-alias-border-l3)' }, children: menuBusy ? t('renameBusy') : t('renameCommit') }),
-                  jsx('button', { key: 'cancel', type: 'button', 'data-kdocs-rename-cancel': 'true', onClick: () => setRenameDraft(undefined), style: { ...HEADER_ACTION_STYLE, textAlign: 'left', padding: `${SPACE.xs} ${SPACE.md}`, font: 'inherit', width: 'auto', border: '0.5px solid var(--dsw-alias-border-l3)' }, children: t('renameCancel') }),
-                ),
+                // Children go in the config as `children:`, never as extra arguments:
+                // the real jsx runtime is `(type, config, key)`, so anything after the
+                // config is silently dropped. Found by rendering the panel in a real
+                // browser: this row was an empty flex div, so the rename draft offered
+                // no 重命名 / 取消 at all — only Enter and Escape, which nothing told
+                // the reader about.
+                jsx('div', {
+                  key: 'actions',
+                  style: { display: 'flex', gap: SPACE.sm },
+                  children: [
+                    jsx('button', { key: 'ok', type: 'button', 'data-kdocs-rename-commit': 'true', disabled: menuBusy, onClick: () => void commitRename(), style: { ...HEADER_ACTION_STYLE, textAlign: 'left', padding: `${SPACE.xs} ${SPACE.md}`, font: 'inherit', width: 'auto', border: '0.5px solid var(--dsw-alias-border-l3)' }, children: menuBusy ? t('renameBusy') : t('renameCommit') }),
+                    jsx('button', { key: 'cancel', type: 'button', 'data-kdocs-rename-cancel': 'true', onClick: () => setRenameDraft(undefined), style: { ...HEADER_ACTION_STYLE, textAlign: 'left', padding: `${SPACE.xs} ${SPACE.md}`, font: 'inherit', width: 'auto', border: '0.5px solid var(--dsw-alias-border-l3)' }, children: t('renameCancel') }),
+                  ],
+                }),
                 renameDraft.error === undefined
                   ? null
                   : jsx('div', { key: 'err', 'data-kdocs-rename-error': renameDraft.error, style: { marginTop: '6px', fontSize: '11.5px', color: 'var(--dsw-alias-state-error-primary)' }, children: renameDraft.error }),
@@ -3348,10 +3511,19 @@ window.__ModuleLoader__.load({
               'data-kdocs-detail': detail.title,
               style: { margin: '6px 10px 0', padding: '8px 10px', border: '0.5px solid var(--dsw-alias-border-l3)', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', flex: 'none' },
               children: [
-                jsx('div', { key: 'head', style: { display: 'flex', alignItems: 'baseline', gap: '8px' } },
-                  jsx('span', { key: 'title', style: { flex: '1 1 auto', fontSize: '12px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: detail.title }),
-                  jsx('button', { key: 'close', type: 'button', 'data-kdocs-detail-close': 'true', onClick: () => setDetail(undefined), style: { ...HEADER_ACTION_STYLE, padding: '1px 7px' }, children: t('detailClose') }),
-                ),
+                // Same drop as the rename draft above, with a worse consequence: the
+                // close control *was* the only `setDetail(undefined)` in the package,
+                // so a sheet opened from the menu could never be dismissed — it sat on
+                // top of the list for the rest of the panel's life. The header (title
+                // and 关闭) is passed as `children:` so it exists at all.
+                jsx('div', {
+                  key: 'head',
+                  style: { display: 'flex', alignItems: 'baseline', gap: '8px' },
+                  children: [
+                    jsx('span', { key: 'title', style: { flex: '1 1 auto', fontSize: '12px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: detail.title }),
+                    jsx('button', { key: 'close', type: 'button', 'data-kdocs-detail-close': 'true', onClick: () => setDetail(undefined), style: { ...HEADER_ACTION_STYLE, padding: '1px 7px' }, children: t('detailClose') }),
+                  ],
+                }),
                 detail.note === undefined
                   ? null
                   : jsx('div', { key: 'note', style: { marginTop: '4px', fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)' }, children: detail.note }),
@@ -3619,7 +3791,131 @@ window.__ModuleLoader__.load({
      * @param {any} ctx - the client root context.
      * @returns {Promise<void>} resolves once mounting has been handed to Cordis.
      */
+    // 插件配置页：配置由宿主 controller 持久化，授权由官方 CLI 管理。
+    const CLI_HELP = 'https://github.com/kdocs-app/kdocs-skill/blob/master/SKILL.md';
+    const CLI_AUTH_HELP = 'https://github.com/kdocs-app/kdocs-skill/blob/master/references/auth.md';
+    const CLI_INSTALL_HELP = 'https://github.com/kdocs-app/kdocs-skill/tree/master/scripts';
+    const SETTINGS_TEXT = { fontSize: '14px', lineHeight: '22px', color: 'var(--dsw-alias-label-primary)' };
+    const SETTINGS_HINT = { margin: 0, fontSize: '13px', lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)' };
+    const SETTINGS_BUTTON = { font: 'inherit', padding: '6px 12px', borderRadius: '12px', border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' };
+
+    function cliPathOps(draft, current = '') {
+      if (typeof draft !== 'string' || /[\u0000-\u001f\u007f]/.test(draft)) throw new Error('CLI 路径不能包含换行或控制字符');
+      const value = draft.trim();
+      if (value.length > 4096) throw new Error('CLI 路径过长，请核对');
+      return value === current ? [] : [{ op: 'set', path: ['cliPath'], value }];
+    }
+
+    function KDocsConfigPage(props) {
+      const controller = props.controller;
+      const [state, setState] = useState(() => controller?.getSnapshot());
+      const [draft, setDraft] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [message, setMessage] = useState('');
+      const [status, setStatus] = useState(null);
+      const mounted = useRef(true);
+      useEffect(() => {
+        mounted.current = true;
+        return () => { mounted.current = false; };
+      }, []);
+      useEffect(() => {
+        if (!controller) return undefined;
+        setState(controller.getSnapshot());
+        return controller.subscribe(() => setState(controller.getSnapshot()));
+      }, [controller]);
+      const form = props.form ?? (controller ? { state, mutate: (ops) => controller.mutate(ops) } : undefined);
+      const current = form?.state?.value?.cliPath ?? '';
+      useEffect(() => { setDraft(current); setStatus(null); }, [current]);
+      const ready = form?.state?.status === 'ready';
+      const writable = ready && form.state.writable === true;
+      const dirty = draft.trim() !== current;
+      const save = async () => {
+        setBusy(true); setMessage('');
+        try {
+          const ops = cliPathOps(draft, current);
+          if (ops.length) {
+            const result = await form.mutate(ops);
+            if (result === false || result?.ok === false) throw new Error(result?.message || result?.reason || '保存被宿主拒绝，请检查配置是否可写');
+          }
+          if (mounted.current) { setStatus(null); setMessage('已保存，CLI 路径已即时生效。'); }
+        } catch (error) {
+          if (mounted.current) setMessage(error?.message || '保存失败，请重试');
+        } finally { if (mounted.current) setBusy(false); }
+      };
+      const check = async () => {
+        setBusy(true); setMessage(''); setStatus(null);
+        try {
+          const result = unwrapResult(await props.remote.status());
+          if (!result.ok) throw new Error(result.error?.message || '检测失败，请重试');
+          if (mounted.current) setStatus(result.value);
+        } catch (error) {
+          if (mounted.current) setMessage(error?.message || '检测失败，请重试');
+        } finally { if (mounted.current) setBusy(false); }
+      };
+      const detect = async () => {
+        setBusy(true); setMessage(''); setStatus(null);
+        try {
+          const result = unwrapResult(await props.remote.detectCli());
+          if (!result.ok) throw new Error(result.error?.message || '自动检测失败，请重试');
+          const found = result.value;
+          if (!found?.cliAvailable || !found.cliPath) throw new Error(found?.reason || '未找到 CLI，请手工填写路径。');
+          if (mounted.current) {
+            setDraft(found.cliPath);
+            setMessage(found.cliPath === current ? '已找到 CLI，路径与当前配置一致。' : '已找到 CLI 并填入路径，请点击保存配置。');
+          }
+        } catch (error) {
+          if (mounted.current) setMessage(error?.message || '自动检测失败，请重试');
+        } finally { if (mounted.current) setBusy(false); }
+      };
+      const helpLink = (href, label) => jsx('a', { href, target: '_blank', rel: 'noopener noreferrer', children: label });
+      return jsxs('section', {
+        'data-kdocs-config': true,
+        style: { ...SETTINGS_TEXT, display: 'grid', gap: '12px', minWidth: 0 },
+        children: [
+          jsx('h2', { style: { margin: 0, fontSize: '16px', fontWeight: 500 }, children: '金山文档 CLI' }),
+          jsxs('div', { 'data-kdocs-settings-card': true, style: { display: 'grid', padding: '12px', borderRadius: '12px', background: 'var(--dsw-alias-bg-module-platform)' }, children: [
+            jsxs('label', { 'data-kdocs-setting-row': 'path', style: { display: 'grid', gap: '8px', paddingBottom: '12px' }, children: [
+              jsx('span', { children: 'CLI 可执行文件路径' }),
+              jsx('input', { type: 'text', value: draft, disabled: busy || !writable, 'aria-label': 'CLI 可执行文件路径', 'aria-describedby': 'kdocs-cli-path-hint', placeholder: '留空自动查找 kdocs-cli', onChange: (event) => { setDraft(event.target.value); setMessage(''); setStatus(null); }, style: { ...SETTINGS_TEXT, font: 'inherit', boxSizing: 'border-box', width: '100%', minWidth: 0, minHeight: '36px', padding: '6px 12px', borderRadius: '12px', border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-base)' } }),
+              jsx('p', { id: 'kdocs-cli-path-hint', style: SETTINGS_HINT, children: '填写可执行文件的完整路径（Windows 为 kdocs-cli.exe），无需加引号或参数。留空时依次查找 KDOCS_CLI_DIR、默认安装目录和 PATH。' }),
+            ] }),
+            jsxs('div', { 'data-kdocs-setting-row': 'actions', style: { display: 'grid', gap: '8px', padding: '12px 0', borderTop: '1px solid var(--dsw-alias-border-l3)' }, children: [
+              jsxs('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' }, children: [
+                jsx('button', { type: 'button', style: SETTINGS_BUTTON, disabled: busy || !writable || !dirty, onClick: () => void save(), children: busy ? '处理中…' : '保存配置' }),
+                jsx('button', { type: 'button', style: SETTINGS_BUTTON, disabled: busy || !ready || dirty || !props.remote, onClick: () => void check(), children: '检测连接' }),
+                jsx('button', { type: 'button', style: SETTINGS_BUTTON, disabled: busy || !writable || !props.remote?.detectCli, onClick: () => void detect(), children: '自动检测' }),
+              ] }),
+              !ready ? jsx('p', { style: SETTINGS_HINT, children: form?.state?.status === 'loading' ? '正在读取配置…' : '配置服务暂不可用，请确认插件已加载。' }) : !writable ? jsx('p', { style: SETTINGS_HINT, children: '当前页面只读，请从本机打开 DSH 后保存配置。' }) : dirty ? jsx('p', { style: SETTINGS_HINT, children: '请先保存配置，再检测连接。' }) : null,
+              status ? jsxs('div', { role: 'status', 'data-kdocs-connection': status.cliAvailable && status.authenticated ? 'success' : 'unavailable', style: { ...SETTINGS_HINT, fontSize: '12px', lineHeight: '18px' }, children: [
+                jsx('p', { style: { margin: 0, color: status.cliAvailable && status.authenticated ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' }, children: status.cliAvailable ? (status.authenticated ? 'CLI 已安装，已登录' : 'CLI 已安装，尚未登录') : '未找到 CLI' }),
+                status.cliVersion ? jsx('p', { style: { margin: 0 }, children: `版本：${status.cliVersion}` }) : null,
+                status.cliPath ? jsx('p', { style: { margin: 0, overflowWrap: 'anywhere' }, children: `调用路径：${status.cliPath}` }) : null,
+                status.reason ? jsx('p', { style: { margin: 0 }, children: status.reason }) : null,
+              ] }) : null,
+              message ? jsx('p', { role: 'status', style: SETTINGS_HINT, children: message }) : null,
+            ] }),
+            jsxs('div', { 'data-kdocs-setting-row': 'login', style: { display: 'grid', gap: '8px', padding: '12px 0', borderTop: '1px solid var(--dsw-alias-border-l3)' }, children: [
+              jsx('h3', { style: { margin: 0, fontSize: '14px', fontWeight: 500 }, children: '安装与登录' }),
+              jsx('p', { style: SETTINGS_HINT, children: '先按官方安装指南安装 CLI，再在终端运行以下命令，打开授权链接并完成登录；自定义安装位置请使用对应的可执行文件路径运行命令。' }),
+              jsx('pre', { style: { ...SETTINGS_HINT, margin: 0, whiteSpace: 'pre-wrap' }, children: 'kdocs-cli auth login\nkdocs-cli auth status' }),
+              jsx('p', { style: SETTINGS_HINT, children: '登录凭据由官方 CLI 保存在系统密钥链中。' }),
+            ] }),
+            jsxs('div', { 'data-kdocs-setting-row': 'help', style: { display: 'flex', flexWrap: 'wrap', gap: '16px', paddingTop: '12px', borderTop: '1px solid var(--dsw-alias-border-l3)', fontSize: '13px' }, children: [helpLink(CLI_HELP, '官方使用文档'), helpLink(CLI_INSTALL_HELP, '官方安装指南'), helpLink(CLI_AUTH_HELP, '登录与认证帮助')] }),
+          ] }),
+        ],
+      });
+    }
+
+
     exports.apply = async function apply(ctx) {
+      ctx.inject(['configForms', 'remote.kdocs'], (scoped) => {
+        scoped.effect(() => scoped.slots.inject('plugins.bundle.config', () => scoped.slots.register(
+          { name: 'plugins.bundle.config', key: 'dsh-kdocs-inside' },
+          guarded(function KDocsPluginSettings(props) {
+            return jsx(KDocsConfigPage, { ...props, controller: scoped.configForms.get('dsh-kdocs-inside'), remote: scoped.remote.kdocs });
+          }),
+        )), 'kdocs: plugin config page');
+      });
       ctx.effect(async () => {
         /** @type {(() => Promise<void>) | undefined} */
         let dispose;
@@ -3670,6 +3966,19 @@ window.__ModuleLoader__.load({
         document.head.appendChild(style);
         return () => style.remove();
       }, 'kdocs: panel stylesheet');
+
+      // The PDF renderer lives in `dsh-pdf-viewer`, so pdf.js, the page strip and
+      // the text layer exist once per page instead of once per plugin that wants
+      // to show a PDF. Waiting for the service (rather than reading it) is what
+      // keeps this package harmless in a composition that does not have the
+      // plugin: the PDF pane says which plugin is missing instead of rendering an
+      // empty frame that looks like a broken document.
+      ctx.inject(['pdfViewer'], (scoped) => {
+        ctx.effect(() => {
+          publishPdfViewer(scoped.pdfViewer);
+          return () => publishPdfViewer(undefined);
+        }, 'kdocs: the PDF renderer service');
+      });
 
       ctx.inject(['remote.kdocs'], (scoped) => {
         // The resource protocol: metadata for `dsh-resource://kdocs/file/...`.
@@ -3735,6 +4044,8 @@ window.__ModuleLoader__.load({
       });
     };
 
+    exports.KDocsConfigPage = KDocsConfigPage;
+    exports.cliPathOps = cliPathOps;
     exports.TYPERT_REMOTE = TYPERT_REMOTE;
     exports.parseKDocsAddress = parseKDocsAddress;
     exports.parseKDocsLocator = parseKDocsLocator;
@@ -3771,6 +4082,9 @@ window.__ModuleLoader__.load({
     // The desktop PDF pane and the shell flag, exported so tests can drive both
     // directions: web stubs must never mount the pane, a dsh-app: stub must.
     exports.KDocsPdfPane = KDocsPdfPane;
+    // The renderer hand-off, exported so a test can put the composition into the
+    // state it asserts on through the same function the inject calls.
+    exports.publishPdfViewer = publishPdfViewer;
     exports.IS_DESKTOP_SHELL = IS_DESKTOP_SHELL;
     exports.KDocsPanelTitle = KDocsPanelTitle;
     exports.kdocsPreviewDefinition = kdocsPreviewDefinition;
