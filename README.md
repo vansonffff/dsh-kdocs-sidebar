@@ -6,7 +6,7 @@
 
 | 插件 | 版本 | 你会得到什么 |
 |---|---|---|
-| [`dsh-kdocs-inside`](dsh-kdocs-inside) | 0.4.3 | CLI 配置/自动检测 + 右栏「金山文档」面板（六个视图 + 搜索）、预览 Tab（web 内嵌在线编辑器 / 桌面端 PDF 导出预览 + 文本）、引用到对话、4 个只读 Agent 工具 |
+| [`dsh-kdocs-inside`](dsh-kdocs-inside) | 0.4.5 | CLI 配置/自动检测 + 右栏「金山文档」面板（团队文档库等视图 + 搜索）、预览 Tab（web 内嵌在线编辑器 / 桌面端 PDF 导出预览 + 文本）、引用到对话、4 个只读 Agent 工具 |
 | [`kdocs-settings`](kdocs-settings) | 0.2.1 | DSH 设置页里的「金山文档 (kdocs)」只读状态分区：CLI 是否安装 / 是否登录 / 版本（**可选**，登录仍在终端完成） |
 
 ---
@@ -59,14 +59,14 @@ kdocs-cli auth login      # 它把授权链接打印到终端，你在浏览器�
 kdocs-cli auth status     # 期望看到 "authenticated": true
 ```
 
-还要有 DSH 本体（`npm install -g @deepseek-ai/dsh`，需 ≥ `0.1.7-rc.1`）与 Node ≥ 22.19。
+还要有 DSH 本体（`npm install -g @deepseek-ai/dsh`，本次目标 `0.2.0-rc.2`）与 Node ≥ 22.19。
 
 > 三平台安装命令、无浏览器环境（服务器 / 容器）怎么拿 Token、企业账号为什么不支持，
 > 都在 [`dsh-kdocs-inside/README.md`](dsh-kdocs-inside/README.md) 里。
 
 ## 安装
 
-**冻结版本 0.4.3**：从 [GitHub Release](https://github.com/vansonffff/dsh-kdocs-sidebar/releases/tag/v0.4.3) 下载 `dsh-kdocs-inside-0.4.3.tgz`，在 DSH 插件管理页添加本地安装包。需先安装并登录官方 kdocs-cli。
+**冻结版本 0.4.5**：从 [GitHub Release](https://github.com/vansonffff/dsh-kdocs-sidebar/releases/tag/v0.4.5) 下载 `dsh-kdocs-inside-0.4.5.tgz`，在 DSH 插件管理页添加本地安装包。需先安装并登录官方 kdocs-cli。
 
 新版配置入口：「插件」→「dsh-kdocs-inside」，提供 CLI 路径、自动检测、保存、连接检测与官方帮助。CLI 配置页已在桌面 0.2.0-rc.2 验证，配置页要求宿主提供 configForms/volatile 设置能力。桌面 PDF 预览需要另行安装 dsh-pdf-viewer。
 

@@ -453,7 +453,7 @@ export class KDocsCliProvider {
       });
     }
     /** @type {Record<string, unknown>} */
-    const params = { page_size: this.options.pageSize, ...source.params };
+    const params = { page_size: view === 'team' ? Math.min(this.options.pageSize, 100) : this.options.pageSize, ...source.params };
     if (typeof cursor === 'string' && cursor !== '') params.page_token = cursor;
 
     const outcome = await this.runAction('drive', source.action, params, {
@@ -462,8 +462,20 @@ export class KDocsCliProvider {
     });
     const payload = asRecord(outcome.data);
 
+    // 团队文档库返回 drive/group，不是 file；根目录用该库的 drive_id + parent_id=0 浏览。
+    const entries = view === 'team'
+      ? (Array.isArray(payload.items) ? payload.items : []).flatMap((item) => {
+        const drive = asRecord(asRecord(item).drive);
+        const group = asRecord(asRecord(item).group);
+        const driveId = typeof drive.id === 'number' ? String(drive.id) : drive.id;
+        if (typeof driveId !== 'string' || driveId === '') return [];
+        const name = typeof drive.name === 'string' && drive.name !== '' ? drive.name
+          : typeof group.name === 'string' && group.name !== '' ? group.name : driveId;
+        return [{ ref: { driveId, fileId: '0' }, name, kind: 'directory' }];
+      })
+      : toEntries(payload.items);
     /** @type {import('../types.js').KDocsPage} */
-    const page = { entries: toEntries(payload.items) };
+    const page = { entries };
     const next = toCursor(payload);
     if (next !== undefined) page.nextCursor = next;
     return page;
@@ -953,6 +965,7 @@ function sleep(ms, signal) {
  * @type {Readonly<Record<string, { action: string, params: Record<string, unknown> }>>}
  */
 const VIEW_SOURCES = Object.freeze({
+  team: { action: 'list-doclibs', params: {} },
   starred: { action: 'list-star-items', params: {} },
   recent: { action: 'list-latest-items', params: {} },
   sharedWithMe: { action: 'search-files', params: { scope: ['share_to_me'] } },

@@ -1358,6 +1358,7 @@ window.__ModuleLoader__.load({
       quote: '引用到对话',
       quoteSelection: '引用选中片段',
       viewTree: '我的云文档',
+      viewTeam: '团队文档',
       viewStarred: '星标',
       viewRecent: '最近',
       viewSharedWithMe: '共享给我',
@@ -1432,6 +1433,7 @@ window.__ModuleLoader__.load({
       quote: 'Quote in chat',
       quoteSelection: 'Quote selection',
       viewTree: 'My drive',
+      viewTeam: 'Team documents',
       viewStarred: 'Starred',
       viewRecent: 'Recent',
       viewSharedWithMe: 'Shared with me',
@@ -3142,6 +3144,7 @@ window.__ModuleLoader__.load({
        */
       const VIEW_TABS = [
         ['tree', t('viewTree')],
+        ['team', t('viewTeam')],
         ['starred', t('viewStarred')],
         ['recent', t('viewRecent')],
         ['sharedWithMe', t('viewSharedWithMe')],
@@ -3168,7 +3171,8 @@ window.__ModuleLoader__.load({
           nodes.push(jsx(EntryRow, {
             key: childKey,
             entry,
-            onMenu: openMenu,
+            // 文档库根节点没有文件元信息或分享链接，只允许展开。
+            onMenu: entry.ref.fileId === '0' ? undefined : openMenu,
             menuKey,
             expanded: state.expanded,
             onToggle,
@@ -3215,17 +3219,7 @@ window.__ModuleLoader__.load({
         } else {
           body.push(jsx('div', {
             key: 'view-entries',
-            children: activeView.entries.map((entry, index) => jsx(EntryRow, {
-              key: `${folderKey(entry.ref)}:${String(index)}`,
-              entry,
-              onMenu: openMenu,
-              menuKey,
-              expanded: {},
-              onToggle,
-              onOpen,
-              depth: 0,
-              t,
-            })),
+            children: renderLevel(`view:${state.view}`, activeView.entries, 0),
           }));
           if (activeView.cursor !== undefined) {
             body.push(jsx('button', {
@@ -3258,17 +3252,7 @@ window.__ModuleLoader__.load({
         else if (state.search.entries.length === 0) body.push(jsx('div', { key: 'search-empty', style: NOTE_STYLE, children: t('noResults') }));
         else body.push(jsx('div', {
           key: 'search-results',
-          children: state.search.entries.map((entry, index) => jsx(EntryRow, {
-            key: folderKey(entry.ref) + String(index),
-            entry,
-            onMenu: openMenu,
-            menuKey,
-            expanded: {},
-            onToggle,
-            onOpen,
-            depth: 0,
-            t,
-          })),
+          children: renderLevel('search', state.search.entries, 0),
         }));
         // The CLI routinely matches more than one page for a common term, so a
         // truncated result set is the normal case rather than an edge one.

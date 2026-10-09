@@ -1,6 +1,6 @@
 {
   "name": "dsh-kdocs-inside",
-  "version": "0.4.3",
+  "version": "0.4.5",
   "description": "金山文档 (KDocs) for DeepSeek Harness — browse, preview and quote documents from the right sidebar, with four read-only Agent tools backed by the official kdocs-cli",
   "type": "module",
   "main": "./src/index.js",
@@ -53,25 +53,23 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-tools": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.7-rc.1",
     "@deepseek-ai/schemastery": "^3.18.2",
     "zod": "^4.6.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2"
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-api-gateway": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-typert-registry": "^0.1.7-rc.1"
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-api-gateway": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-typert-registry": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
   },
   "engines": {
     "node": ">=22.19.0"
-  },
-  "scripts": {
-    "test": "node --test test/*.test.js",
-    "test:live": "KDOCS_LIVE=require node --test test/m2-gate.test.js test/tools.test.js test/resource.test.js test/remote-contract.test.js"
   },
   "repository": {
     "type": "git",
@@ -80,5 +78,20 @@
   },
   "homepage": "https://github.com/vansonffff/dsh-kdocs-sidebar#readme",
   "license": "MIT",
-  "private": false
+  "private": false,
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:live": "KDOCS_LIVE=require node --test test/m2-gate.test.js test/tools.test.js test/resource.test.js test/remote-contract.test.js"
+  }
 }

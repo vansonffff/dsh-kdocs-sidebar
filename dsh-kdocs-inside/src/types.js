@@ -46,7 +46,7 @@
  * they page the same way. They share one accessor because they share one shape —
  * a caller only ever asks for "the entries of this view".
  *
- * @typedef {'starred' | 'recent' | 'sharedWithMe' | 'sharedByMe' | 'trash'} KDocsView
+ * @typedef {'team' | 'starred' | 'recent' | 'sharedWithMe' | 'sharedByMe' | 'trash'} KDocsView
  */
 
 /**
