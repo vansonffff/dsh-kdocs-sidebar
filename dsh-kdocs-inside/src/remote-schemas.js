@@ -51,7 +51,7 @@
  *
  * @typedef {'string' | 'number' | 'boolean' | 'stringArray' | 'freeObject'
  *   | 'fileRef' | 'entry' | 'entryArray' | 'page' | 'search' | 'content'
- *   | 'status' | 'loginEvent' | 'failure'} KDocsFieldKind
+ *   | 'status' | 'loginEvent' | 'failure' | 'previewFile'} KDocsFieldKind
  */
 
 /**
@@ -217,6 +217,9 @@ export function fieldSchema(field, z) {
         // strict client schema or an output decode is switched on.
         total: z.number().optional(),
       });
+      break;
+    case 'previewFile':
+      schema = z.object({ kind: z.literal('pdf-file'), absolutePath: z.string(), name: z.string(), size: z.number().nonnegative(), source: z.enum(['download', 'export']), cached: z.boolean() }).strict();
       break;
     case 'freeObject':
       schema = z.record(z.string(), z.unknown());

@@ -23,6 +23,7 @@
  * @module kdocs/client/provider
  */
 
+import { KDocsPreviewCache, downloadPreview } from './preview-cache.js';
 import { KDocsError } from '../errors.js';
 import { asRecord, isAbortSignal } from '../internal.js';
 import { LOGIN_TIMEOUT_MS, READ_TIMEOUT_MS, authUrlIn, cliVersion, discoverCli, resolveCli, runAction, runCli } from './cli.js';
@@ -126,6 +127,8 @@ export class KDocsCliProvider {
      * @type {Map<string, { base64: string, size: number, exportedAt: string }>}
      */
     this.pdfCache = new Map();
+    this.previewCache = new KDocsPreviewCache({ maxBytes: this.options.pdfCacheMaxBytes, maxEntries: this.options.pdfCacheMax });
+    ctx?.effect?.(() => () => this.previewCache.dispose(), 'kdocs: preview cache');
   }
 
   /** volatile 路径每次现取；切换路径后清除旧 CLI 的状态和版本。 */
@@ -137,6 +140,7 @@ export class KDocsCliProvider {
       this.statusCache = undefined;
       this.versionCache = undefined;
       this.pdfCache.clear();
+      this.previewCache.invalidate();
     }
     return path;
   }
@@ -773,6 +777,41 @@ export class KDocsCliProvider {
     const cached = this.pdfCache.get(cacheKey);
     if (cached !== undefined && options.refresh !== true) return { ...cached, cached: true };
 
+    const downloadUrl = await this.officePdfUrl(ref, signal);
+
+    const response = await fetch(downloadUrl, { signal });
+    if (!response.ok) {
+      throw new KDocsError('cli-failed', {
+        operation: 'wps.export.download',
+        message: `下载导出的 PDF 失败（HTTP ${response.status}）`,
+      });
+    }
+    // Size guard, before the body is read: bytes cross the Remote as base64 in a
+    // single message, so an unbounded scan bundle would hit the IPC message size
+    // and Host memory long before pdf.js ever saw it. A rejected preview must
+    // say so plainly, not hang the sidebar.
+    const announced = Number(response.headers.get('content-length') ?? 0);
+    if (announced > 0) assertPdfSize(announced, this.options.maxPdfBytes, 'wps.export.download');
+    const buffer = Buffer.from(await response.arrayBuffer());
+    assertPdfSize(buffer.length, this.options.maxPdfBytes, 'wps.export.download');
+    // The renderer is about to be handed these bytes and told they are a PDF.
+    // Check before pdf.js has to: an exported PDF is one by construction, but an
+    // error page served with 200 would otherwise arrive as an unreadable document.
+    if (buffer.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      throw new KDocsError('unsupported', {
+        operation: 'wps.export.download',
+        message: '下载回来的内容不是 PDF，无法预览——请点「在金山文档打开」查看原文档',
+      });
+    }
+    const result = { base64: buffer.toString('base64'), size: buffer.length, exportedAt: new Date().toISOString() };
+
+    this.pdfCache.delete(cacheKey);
+    this.pdfCache.set(cacheKey, result);
+    trimPdfCache(this.pdfCache, this.options.pdfCacheMax, this.options.pdfCacheMaxBytes);
+    return { ...result, cached: false };
+  }
+  /** 保留既有导出轮询及连续两次完成无地址的保护，供新旧接口共用。 */
+  async officePdfUrl(ref, signal) {
     const exported = await this.runAction('wps', 'export', { file_id: ref.fileId, format: 'pdf' }, {
       signal,
       timeoutMs: this.options.defaultTimeoutMs,
@@ -854,37 +893,38 @@ export class KDocsCliProvider {
       });
     }
 
-    const response = await fetch(downloadUrl, { signal });
-    if (!response.ok) {
-      throw new KDocsError('cli-failed', {
-        operation: 'wps.export.download',
-        message: `下载导出的 PDF 失败（HTTP ${response.status}）`,
-      });
-    }
-    // Size guard, before the body is read: bytes cross the Remote as base64 in a
-    // single message, so an unbounded scan bundle would hit the IPC message size
-    // and Host memory long before pdf.js ever saw it. A rejected preview must
-    // say so plainly, not hang the sidebar.
-    const announced = Number(response.headers.get('content-length') ?? 0);
-    if (announced > 0) assertPdfSize(announced, this.options.maxPdfBytes, 'wps.export.download');
-    const buffer = Buffer.from(await response.arrayBuffer());
-    assertPdfSize(buffer.length, this.options.maxPdfBytes, 'wps.export.download');
-    // The renderer is about to be handed these bytes and told they are a PDF.
-    // Check before pdf.js has to: an exported PDF is one by construction, but an
-    // error page served with 200 would otherwise arrive as an unreadable document.
-    if (buffer.subarray(0, 5).toString('latin1') !== '%PDF-') {
-      throw new KDocsError('unsupported', {
-        operation: 'wps.export.download',
-        message: '下载回来的内容不是 PDF，无法预览——请点「在金山文档打开」查看原文档',
-      });
-    }
-    const result = { base64: buffer.toString('base64'), size: buffer.length, exportedAt: new Date().toISOString() };
 
-    this.pdfCache.delete(cacheKey);
-    this.pdfCache.set(cacheKey, result);
-    trimPdfCache(this.pdfCache, this.options.pdfCacheMax, this.options.pdfCacheMaxBytes);
-    return { ...result, cached: false };
+    return downloadUrl;
   }
+
+  /** 只返回本机文件信息，所有签名地址和下载内容留在 Host。 */
+  async preparePreview(ref, options = {}, signal) {
+    requireRef(ref, 'preparePreview');
+    this.getCliPath();
+    const info = await this.stat(ref, signal);
+    const extension = /\.([^.]+)$/.exec(info.name)?.[1]?.toLowerCase();
+    if (!['pdf', 'doc', 'docx', 'ppt', 'pptx'].includes(extension)) {
+      throw new KDocsError('unsupported', { message: '该文件类型不支持 PDF 预览，请使用文本阅读或在金山文档打开。' });
+    }
+    return this.previewCache.prepare(`${ref.driveId}/${ref.fileId}`, info.name, async (target, sharedSignal) => {
+      const bounded = AbortSignal.any([sharedSignal, AbortSignal.timeout(extension === 'pdf' ? 60_000 : this.options.exportTimeoutMs + 60_000)]);
+      let url; let hashes = [];
+      if (extension === 'pdf') {
+        const response = await this.runAction('drive', 'download-file', {
+          file_id: ref.fileId, drive_id: ref.driveId, with_hash: true,
+          storage_base_domain: 'wps365.com', internal: false,
+        }, { signal: bounded, timeoutMs: this.options.defaultTimeoutMs });
+        const data = asRecord(response.data);
+        url = data.url; hashes = Array.isArray(data.hashes) ? data.hashes : [];
+      } else {
+        url = await this.officePdfUrl(ref, bounded);
+      }
+      const downloadSignal = AbortSignal.any([bounded, AbortSignal.timeout(60_000)]);
+      const size = await downloadPreview(url, target, { signal: downloadSignal, maxBytes: this.options.maxPdfBytes, hashes });
+      return { size, source: extension === 'pdf' ? 'download' : 'export' };
+    }, { refresh: options.refresh === true, signal });
+  }
+
 }
 
 /**

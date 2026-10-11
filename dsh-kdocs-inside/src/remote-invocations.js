@@ -55,6 +55,7 @@
  * @type {KDocsInvocation[]}
  */
 export const KDOCS_INVOCATIONS = [
+  { method: 'preparePreview', implementation: 'remotePreparePreview', parameters: [{ name: 'ref', kind: 'fileRef' }, { name: 'options', kind: 'freeObject', optional: true }], valueKind: 'previewFile', cancellable: true },
   { method: 'status', implementation: 'remoteStatus', parameters: [], valueKind: 'status', cancellable: true },
   { method: 'detectCli', implementation: 'remoteDetectCli', parameters: [], valueKind: 'status', cancellable: true },
   {
@@ -134,16 +135,6 @@ export const KDOCS_INVOCATIONS = [
     implementation: 'remoteGetLink',
     parameters: [{ name: 'ref', kind: 'fileRef' }],
     valueKind: 'string',
-    cancellable: true,
-  },
-  {
-    method: 'exportPdf',
-    implementation: 'remoteExportPdf',
-    parameters: [
-      { name: 'ref', kind: 'fileRef' },
-      { name: 'options', kind: 'freeObject', optional: true },
-    ],
-    valueKind: 'freeObject',
     cancellable: true,
   },
 ];

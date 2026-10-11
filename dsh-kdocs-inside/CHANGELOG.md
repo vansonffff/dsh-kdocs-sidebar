@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.4.6-rc.1 — 2026-10-11（发行候选）
+
+- 桌面 PDF/Word/PPT 默认点击走官方 PDF 文件 Tab，删除独立 Viewer 注入与渲染代码；Web iframe 保留。
+- 新增统一 `preparePreview` Remote，PDF 走 `drive.download-file`，Office 复用原有导出轮询；下载 URL 留在 Host，不传 PDF base64。
+- 新增私有临时文件缓存、并发合并、稳定身份及原子刷新、有界流式 HTTPS 下载、PDF 文件头与哈希校验；容量满保留已打开文件并明确拒绝新预览。
+- 文本阅读、划选引用、在线打开、Agent Tools 保留。旧 Host `exportPdf` 方法仅为既有 Host 消费者兼容保留，桌面及 Remote 均使用新接口。
+- 先完成 macOS 0.2.0-rc.2 P0 真实 Electron 临时 PDF 测试；真实云端 PDF 和 DOCX 新 Host 路径通过。Windows、alpha.2、最终 TGZ 全新安装与 PPT 实机尚未通过，不作为稳定版或全面兼容声明。
+
 ## 0.4.5 — 2026-10-09（本地冻结）
 
 - 纳入团队文档库入口、共享与搜索目录展开及相关回归。

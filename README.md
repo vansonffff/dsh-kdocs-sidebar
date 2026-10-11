@@ -1,121 +1,50 @@
 # 金山文档 for DeepSeek Harness
 
-把金山文档（WPS 云文档）接进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）：
-在**右侧边栏**里浏览和预览你的云盘，把文档引用进对话，也能让 Agent 直接读正文。
-**Web 与官方桌面端（Electron）双端适配。**
+在 DSH 右侧栏浏览金山云文档、阅读和引用正文，并提供四个只读 Agent 工具。
 
-| 插件 | 版本 | 你会得到什么 |
+当前候选：**dsh-kdocs-inside 0.4.6-rc.1**。这是 RC 预发布；稳定版仍为 [0.4.5](https://github.com/vansonffff/dsh-kdocs-sidebar/releases/tag/v0.4.5)。
+
+| 插件 | 版本 | 功能 |
 |---|---|---|
-| [`dsh-kdocs-inside`](dsh-kdocs-inside) | 0.4.5 | CLI 配置/自动检测 + 右栏「金山文档」面板（团队文档库等视图 + 搜索）、预览 Tab（web 内嵌在线编辑器 / 桌面端 PDF 导出预览 + 文本）、引用到对话、4 个只读 Agent 工具 |
-| [`kdocs-settings`](kdocs-settings) | 0.2.1 | DSH 设置页里的「金山文档 (kdocs)」只读状态分区：CLI 是否安装 / 是否登录 / 版本（**可选**，登录仍在终端完成） |
+| [dsh-kdocs-inside](dsh-kdocs-inside) | 0.4.6-rc.1 | CLI 配置、团队/个人文件列表、搜索、官方 PDF 预览、文本阅读及引用、只读工具 |
+| [kdocs-settings](kdocs-settings) | 0.2.1 | 可选的 CLI 状态分区，本次未修改 |
 
----
+## 预览方式
 
-## 双端行为一览（0.4.0 起）
+DSH 桌面端 PDF 预览使用 DSH 内置文件阅读器，无需安装额外 PDF 插件。原生 PDF 通过金山官方接口下载后在本机临时缓存；Word、PPT 先转换为 PDF 再预览。预览文件不会上传到第三方服务。
 
-同一份包装进 web profile 和官方桌面端，界面与能力一致，**只有「原版」预览按端分流**：
+桌面端默认点击 PDF、DOC、DOCX、PPT、PPTX，在同一窗口的右侧栏打开官方文件 Tab。右击“文本阅读”保留 KDocs 划选引用；Web 保持金山 iframe。表格不纳入 PDF 转换，`.pof` 不视为 PDF。
 
-| | Web（浏览器） | 桌面端（Electron） |
-|---|---|---|
-| 「原版」预览 | 内嵌金山文档**在线编辑器**，可读可编辑 | **PDF 导出预览**（只读，内置 pdf.js 渲染） |
-| 编辑文档 | 预览里直接编辑 | 点「在金山文档打开」跳系统浏览器 |
-| 依赖的登录态 | 浏览器里的金山文档 web 会话 | kdocs-cli Token（密钥链），与网页登录无关 |
+如果本机已启用旧 `dsh-pdf-viewer`，DSH 的阅读器选择菜单可能显示两个同名 PDF 选项，旧扩展可能优先接管渲染。停用它即可使用官方内置阅读器；本 RC 的代码及包依赖均已移除对旧插件的依赖。
 
-桌面端不走 iframe 的原因：应用内嵌的 Chromium profile 与系统浏览器不共享 cookie，
-金山授权接口在该嵌入上下文拒绝签发授权码，会话无法建立。PDF 导出全程走 CLI Token，
-是唯一不依赖网页会话的版式预览通道。
+## 安装 RC
 
----
+宿主核心 peer 最低范围为 `>=0.2.0-rc.2`，Node ≥22.19。macOS 实测宿主为 0.2.0-rc.2，后续版本仍需对应验收。
 
-## 先决条件（不满足的话，插件装上也是空的）
+先通过[金山官方 CLI 指引](https://github.com/kdocs-app/kdocs-skill)安装并登录 `kdocs-cli`：
 
-这两个插件都**不携带、也不代管**金山文档的登录凭据。它们驱动金山官方的命令行工具 `kdocs-cli`，
-Token 由那个 CLI 存进**操作系统的钥匙串** —— 插件从不读取、存储或转发你的 Token。
-
-所以按顺序做三件事：
-
-**1. 装 `kdocs-cli`**（金山办公官方，不是本项目）
-
-两个官方获取入口：**金山文档官方页面**（kdocs.cn / 365.kdocs.cn 的「金山文档 Skill」入口，
-页面内有下载与 Token 指引），或官方仓库
-[kdocs-app/kdocs-skill](https://github.com/kdocs-app/kdocs-skill) 的安装脚本：
-
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/kdocs-app/kdocs-skill/master/scripts/setup.sh -o /tmp/setup.sh && bash /tmp/setup.sh
+```sh
+kdocs-cli auth login
+kdocs-cli auth status
 ```
 
-Windows 用同一个官方仓库 `scripts/` 下的 `setup.ps1`（PowerShell），已有 Node.js 可用 `setup.cjs`。
+从 [v0.4.6-rc.1 预发布](https://github.com/vansonffff/dsh-kdocs-sidebar/releases/tag/v0.4.6-rc.1)下载 `dsh-kdocs-inside-0.4.6-rc.1.tgz`，在 DSH 插件管理页添加本地安装包。CLI Profile 可用官方入口安装下载的 TGZ：
 
-**2. 登录**
-
-```bash
-kdocs-cli auth login      # 它把授权链接打印到终端，你在浏览器里打开并授权
+```sh
+dsh plugin --profile <你的Profile> add <下载的TGZ路径>
 ```
 
-**3. 自检**
+安装或升级后完整退出并重新启动 DSH。CLI 配置入口为“插件 → dsh-kdocs-inside”，支持路径设置、自动检测和连接检查。此 RC 不发布 npm。
 
-```bash
-kdocs-cli auth status     # 期望看到 "authenticated": true
-```
+## 验证边界
 
-还要有 DSH 本体（`npm install -g @deepseek-ai/dsh`，本次目标 `0.2.0-rc.2`）与 Node ≥ 22.19。
+- macOS 真 Electron 已验证：关闭旧 Viewer 并冷启动后的真实 PDF/DOCX、同一右栏、多页滚动、缩放、文字复制、标签复用及缓存刷新。
+- 完整测试 311 项，309 通过；2 项为开发前已有的云盘根目录 Word 样本缺失失败。本轮新增13项全部通过。
+- Windows、其他宿主版本、真实 PPT/PPTX、全新桌面组合安装，以及退出整个 DSH 后磁盘清理回读仍待实机验收。
+- 缓存清理钩子与单测已通过；异常退出遗留缓存在下次首次准备预览时按归属、原 Host 进程退出及创建超过24小时的条件回收。
 
-> 三平台安装命令、无浏览器环境（服务器 / 容器）怎么拿 Token、企业账号为什么不支持，
-> 都在 [`dsh-kdocs-inside/README.md`](dsh-kdocs-inside/README.md) 里。
-
-## 安装
-
-**冻结版本 0.4.5**：从 [GitHub Release](https://github.com/vansonffff/dsh-kdocs-sidebar/releases/tag/v0.4.5) 下载 `dsh-kdocs-inside-0.4.5.tgz`，在 DSH 插件管理页添加本地安装包。需先安装并登录官方 kdocs-cli。
-
-新版配置入口：「插件」→「dsh-kdocs-inside」，提供 CLI 路径、自动检测、保存、连接检测与官方帮助。CLI 配置页已在桌面 0.2.0-rc.2 验证，配置页要求宿主提供 configForms/volatile 设置能力。桌面 PDF 预览需要另行安装 dsh-pdf-viewer。
-
-
-**web 端**：
-
-```bash
-# 右栏面板 + 预览 + 引用 + 工具（npm 最新正式版）
-dsh plugin --profile web add dsh-kdocs-inside
-
-# 设置页里的状态分区（可选）
-dsh plugin --profile web add kdocs-settings
-
-# 装完 / 升级后重启
-dsh web
-```
-
-也可以在 web 端「设置 → 插件」里填包名安装，效果相同。
-**装完必须重启 `dsh web`，并重新加载浏览器页面。**
-
-**桌面端**（官方 Electron 应用）：profile 由应用独占管理，没有命令行入口——
-在桌面端「设置 → 插件」里填包名 `dsh-kdocs-inside` 直接安装（无需克隆本仓库），
-装完重启应用。
-
-## 用起来是什么样
-
-- 右栏出现「金山文档」：我的云文档 / 星标 / 最近 / 共享给我 / 我分享的 / 回收站，逐层展开、可搜索；
-- 点开任何文档 → 预览 Tab：web 端内嵌 WPS 在线编辑器，桌面端为 PDF 导出预览，
-  两端都可以切「文本」模式读正文；
-- 在面板里**右键任意一行（文件或文件夹）**→「引用到对话」，地址就写进输入框；
-- Agent 侧有 4 个只读工具：`kdocs_list` / `kdocs_search` / `kdocs_stat` / `kdocs_read`。
-
-**引用能力的边界**（别被"划选"两个字误导）：文档**正文内部**的文字级引用目前做不到 ——
-web 端预览默认的「原版」是跨域 iframe，插件读不到里面的选区。文字级引用只在「文本」模式下可用，
-且摘录超过 800 字会被丢弃。详见
-[`dsh-kdocs-inside/README.md`](dsh-kdocs-inside/README.md)。
-
-## 换机器要不要重新登录
-
-凭据属于「这台机器 + 这个系统用户」的钥匙串：重启 DSH、重装插件、重新 clone 本仓库都**不用**重登；
-换电脑、换系统用户、Docker / CI / 远程服务器则**需要**。
+具体配置与缓存保护见 [插件说明](dsh-kdocs-inside/README.md)。
 
 ## 许可
 
-[MIT](LICENSE) —— 两个插件都是。桌面端 PDF 渲染使用内置的
-[pdf.js](https://github.com/mozilla/pdf.js)（Apache-2.0，见
-[`dsh-kdocs-inside/vendor/pdfjs-LICENSE.txt`](dsh-kdocs-inside/vendor/pdfjs-LICENSE.txt)），
-仅在桌面端首次预览时懒加载，web 端不会下载。
-
----
-
-<sub>本仓库是发布源码：不含开发测试与里程碑记录。</sub>
+[MIT](LICENSE)。本仓库保留发行源码，不包含开发测试、客户材料、凭据或本机验收截图；PDF 阅读器由 DSH 宿主提供。

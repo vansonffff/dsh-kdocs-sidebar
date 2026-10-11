@@ -26,6 +26,39 @@ window.__ModuleLoader__.load({
     const exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 
+    // 官方 dsh-util-workspace-path 0.2.0-rc.2 的浏览器安全辅助函数，原样嵌入。
+//#region lib/types/file-address.js
+/**
+* The `dsh-resource://file/…` address grammar: how a file is named across the
+* Sidebar and the resource model, built and parsed without touching a
+* filesystem.
+* @module
+*/
+/** The scheme and type every file address opens with. */
+const FILE_ADDRESS_PREFIX = "dsh-resource://file/";
+/** Component-encode one id or path segment, keeping `:` literal for drive letters. */
+function encodeSegment(segment) {
+	return encodeURIComponent(segment).replace(/%3A/gi, ":");
+}
+/** Encode a `/`-separated path segment by segment. */
+function encodePath(path) {
+	return path.split("/").map(encodeSegment).join("/");
+}
+/** Whether a decoded first path segment is a Windows drive (`C:`). */
+function isDriveSegment(segment) {
+	return segment !== void 0 && /^[A-Za-z]:$/.test(segment);
+}
+/**
+* Build the address of a file read through one Session.
+* @param sessionId - the Session whose Host workspace resolves the path.
+* @param path - absolute or workspace-relative path; backslashes are normalized to `/`, and leading `./` prefixes are dropped.
+* @returns the `dsh-resource://file/session/<sessionId>/<path>` address.
+*/
+function sessionFileAddress(sessionId, path) {
+	const normalized = path.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
+	return `${FILE_ADDRESS_PREFIX}session/${encodeSegment(sessionId)}/${encodePath(normalized)}`;
+}
+
     const react = require('react');
     const jsxRuntime = require('react/jsx-runtime');
     const { jsx, jsxs } = jsxRuntime;
@@ -148,6 +181,7 @@ window.__ModuleLoader__.load({
      * @type {{ method: string, implementation: string, parameters: { name: string, optional?: boolean }[], cancellable: boolean }[]}
      */
     const INVOCATIONS = [
+      { method: 'preparePreview', implementation: 'remotePreparePreview', parameters: [{ name: 'ref' }, { name: 'options', optional: true }], cancellable: true },
       { method: 'status', implementation: 'remoteStatus', parameters: [], cancellable: true },
       { method: 'detectCli', implementation: 'remoteDetectCli', parameters: [], cancellable: true },
       {
@@ -180,12 +214,6 @@ window.__ModuleLoader__.load({
         cancellable: true,
       },
       { method: 'getLink', implementation: 'remoteGetLink', parameters: [{ name: 'ref' }], cancellable: true },
-      {
-        method: 'exportPdf',
-        implementation: 'remoteExportPdf',
-        parameters: [{ name: 'ref' }, { name: 'options', optional: true }],
-        cancellable: true,
-      },
     ];
 
     /** The contribution mounted into the Client Remote. */
@@ -769,149 +797,30 @@ window.__ModuleLoader__.load({
       return ref === undefined ? undefined : ref.fileId;
     }
 
-    /**
-     * Decode the Host's base64 PDF payload into bytes.
-     *
-     * @param {string} base64 - the wire payload.
-     * @returns {Uint8Array} the decoded bytes.
-     */
-    function base64ToBytes(base64) {
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-      return bytes;
+    /** 从当前 Tab 的 Session 注入构造官方资源；读取失败留在原页面。 */
+    async function openOfficialPreview(props, ref, tab, refresh = false) {
+      if (!props.sessionId) throw new Error('无法取得当前标签页的 Session 身份。');
+      const result = unwrapResult(await props.remote.preparePreview(ref, { refresh }, tab.signal));
+      if (!result.ok) throw new Error(result.error?.message ?? '文档转换失败，无法生成预览。');
+      const file = result.value;
+      if (file?.kind !== 'pdf-file' || typeof file.absolutePath !== 'string') throw new Error('预览文件响应无效。');
+      const stat = unwrapResult(await props.workspaceFiles.stat(props.sessionId, file.absolutePath, tab.signal));
+      if (!stat.ok) throw new Error('DSH 无法读取预览缓存，请检查本地文件访问权限。');
+      tab.signal.throwIfAborted();
+      tab.actions.openResource(sessionFileAddress(props.sessionId, file.absolutePath));
+      return file;
     }
 
-    /**
-     * The PDF renderer, once the `dsh-pdf-viewer` plugin is in the composition.
-     *
-     * Rendering a PDF is not this package's business any more: pdf.js, the page
-     * strip and the text layer live in one place so that a page carries one copy
-     * of all three however many plugins preview a PDF. What this package owns is
-     * *getting the bytes* (the CLI export) and *quoting what the reader selects*.
-     *
-     * The handle is a module-scope cell plus subscribers rather than a slot prop
-     * because the service may arrive after the tab is already open: a prop would
-     * freeze the first answer, and the first answer is legitimately "not yet".
-     */
-    let pdfViewerService;
-    /** Bodies waiting to hear when the renderer arrives or goes away. */
-    const pdfViewerSubscribers = new Set();
-
-    /**
-     * Publish (or withdraw) the renderer to every open body.
-     *
-     * Called by the `pdfViewer` inject below. Exported because a test that cannot
-     * put the composition into the state it asserts on would have to reach into
-     * the subscriber set — and then it would be testing its own stub rather than
-     * this path.
-     *
-     * @param {any} service - the renderer service, or `undefined` to withdraw it.
-     * @returns {void}
-     */
-    function publishPdfViewer(service) {
-      pdfViewerService = service;
-      for (const listener of pdfViewerSubscribers) listener(service);
-    }
-
-    /**
-     * Subscribe one body to the renderer service.
-     *
-     * @returns {any} the service, or `undefined` while `dsh-pdf-viewer` is absent.
-     */
-    function usePdfViewerService() {
-      const [service, setService] = useState(pdfViewerService);
-      useEffect(() => {
-        pdfViewerSubscribers.add(setService);
-        // Between the first render and this effect the service may have arrived:
-        // re-reading closes that window instead of waiting for the next change.
-        setService(pdfViewerService);
-        return () => {
-          pdfViewerSubscribers.delete(setService);
-        };
-      }, []);
-      return service;
-    }
-
-    /**
-     * The desktop shell's 原版 body: the document rendered from its exported PDF.
-     *
-     * Two lazy things happen on mount: the Host exports and downloads the PDF
-     * (CLI token, no web session — the only path that can work in the desktop
-     * shell), and the viewer chunk arrives via `require.async`, the platform's
-     * own pattern for package-local lazy code. The web profile never pays for
-     * either: this component is only mounted when {@link IS_DESKTOP_SHELL}.
-     *
-     * `nonce` is the header's ↻: the first mount uses the Host's cache, any
-     * reload forces a fresh export, because the document may have changed since.
-     *
-     * @param {any} props - `{ fileRef, remote, t, nonce, signal }`.
-     * @returns {any} the rendered pane.
-     */
-    function KDocsPdfPane(props) {
-      const { fileRef, remote, t, nonce, signal } = props;
-      const viewer = usePdfViewerService();
-      const [state, setState] = useState({ status: 'loading', error: undefined, bytes: undefined, Viewer: undefined });
-
-      useEffect(() => {
-        let cancelled = false;
-        // Without a renderer there is nothing worth exporting; the render below
-        // draws the sentence that says which plugin is missing.
-        if (viewer === undefined) {
-          return () => {
-            cancelled = true;
-          };
-        }
-        setState({ status: 'loading', error: undefined, bytes: undefined, Viewer: undefined });
-        void (async () => {
-          try {
-            const [result, Viewer] = await Promise.all([
-              remote.exportPdf(fileRef, { refresh: nonce > 0 }, signal).then(unwrapResult),
-              // pdf.js rides the renderer's own lazy chunk, so the page downloads
-              // it once however many plugins preview a PDF.
-              viewer.load(),
-            ]);
-            if (cancelled) return;
-            if (result.ok !== true) {
-              setState({ status: 'error', error: result.error?.message ?? t('pdfLoadFailed'), bytes: undefined, Viewer: undefined });
-              return;
-            }
-            setState({ status: 'ready', error: undefined, bytes: base64ToBytes(result.value.base64), Viewer });
-          } catch (error) {
-            // An aborted call is the tab closing or reloading, not a failure.
-            if (cancelled || signal?.aborted) return;
-            setState({ status: 'error', error: String(error && error.message ? error.message : error), bytes: undefined, Viewer: undefined });
-          }
-        })();
-        return () => {
-          cancelled = true;
-        };
-        // `signal` is not referentially stable (the read effect above learned this
-        // the hard way), and neither is `fileRef`: `KDocsPreview` rebuilds it with
-        // `parseKDocsAddress(address)` on **every** render. Listing the object here
-        // made any unrelated re-render — writing a quote into the composer is one —
-        // drop the bytes and the renderer, so the pane blanked and redrew: the
-        // flicker reported from the desktop app. The document's identity is the two
-        // strings, not the object that carries them.
-      }, [fileRef?.driveId, fileRef?.fileId, nonce, viewer]);
-
-      // "No renderer in this composition" is a fact about the composition, not a
-      // state the export can produce — deciding it during render is what keeps the
-      // first paint honest instead of showing "loading" for something that will
-      // never load.
-      const paneStatus = viewer === undefined ? 'missing' : state.status;
-      if (paneStatus === 'ready' && state.Viewer !== undefined && state.bytes !== undefined) {
-        return jsx(state.Viewer, { bytes: state.bytes, t });
-      }
-      // eslint-disable-next-line no-nested-ternary -- three states, three sentences
-      const notice = paneStatus === 'missing'
-        ? t('pdfViewerMissing')
-        : (paneStatus === 'loading' ? t('pdfLoading') : (state.error ?? t('pdfLoadFailed')));
-      return jsx('div', {
-        'data-kdocs-pdf-pane': paneStatus,
-        style: { flex: '1 1 auto', minHeight: '0', padding: '14px 12px', fontSize: '12.5px', color: 'var(--dsw-alias-label-secondary)', overflow: 'auto' },
-        children: notice,
-      });
+    /** 其他资源入口仍可阅读文本；点击原版时显式打开官方阅读器。 */
+    function KDocsOfficialPreview(props) {
+      const [message, setMessage] = useState('');
+      return jsxs('div', { style: { padding: '12px' }, children: [
+        jsx('button', { children: props.t('officialPreview'), onClick: async () => {
+          setMessage(props.t('preparingPreview'));
+          try { await openOfficialPreview(props, props.fileRef, props.tab, props.nonce > 0); setMessage(''); }
+          catch (error) { if (!props.tab.signal.aborted) setMessage(error.message); }
+        }}), jsx('p', { role: 'status', children: message }),
+      ]});
     }
 
     /**
@@ -935,7 +844,7 @@ window.__ModuleLoader__.load({
       // source: first `openHref` read `ref`, then `embedding` read `mode`. Each
       // threw during render and left the whole pane empty.
       const ref = parseKDocsAddress(address);
-      const [mode, setMode] = useState('embed');
+      const [mode, setMode] = useState(IS_DESKTOP_SHELL ? 'text' : 'embed');
       /**
        * Bumped to force the embed to load again.
        *
@@ -951,7 +860,7 @@ window.__ModuleLoader__.load({
       // browser's existing 金山文档 session and works as-is. In the desktop shell
       // that embed can never sign in (measured 2026-09-25: the OAuth authorize
       // step 403s and the session cookie never lands in the app's jar), so the
-      // desktop renders the CLI-exported PDF instead — see KDocsPdfPane.
+      // desktop renders the CLI-exported PDF instead — use the official file Tab.
       const embedRequested = mode === 'embed' && embedUrl !== undefined;
       const embedding = embedRequested && !IS_DESKTOP_SHELL;
       const pdfPreview = embedRequested && IS_DESKTOP_SHELL;
@@ -1253,7 +1162,8 @@ window.__ModuleLoader__.load({
               'data-kdocs-pdf-area': 'true',
               onMouseUp: onReaderMouseUp,
               style: { flex: '1 1 auto', minHeight: '0', display: 'flex', flexDirection: 'column' },
-              children: jsx(KDocsPdfPane, {
+              children: jsx(KDocsOfficialPreview, {
+                ...props, tab,
                 fileRef: ref,
                 remote: props.remote,
                 t,
@@ -1353,7 +1263,10 @@ window.__ModuleLoader__.load({
       embedReload: '刷新「原版」',
       pdfLoading: '正在生成 PDF 预览（首次需要几秒导出）…',
       pdfLoadFailed: 'PDF 预览加载失败',
-      pdfViewerMissing: 'PDF 预览需要 dsh-pdf-viewer 插件：请先安装并启用它，然后重新打开本页签',
+      officialPreview: '打开官方 PDF 预览',
+      preparingPreview: '正在准备 PDF 预览…',
+      menuTextRead: '文本阅读',
+      menuRefreshPreview: '刷新 PDF 预览',
       pdfPages: '共 {pages} 页',
       quote: '引用到对话',
       quoteSelection: '引用选中片段',
@@ -1428,7 +1341,10 @@ window.__ModuleLoader__.load({
       embedReload: 'Reload Original view',
       pdfLoading: 'Generating the PDF preview (the first export takes a few seconds)…',
       pdfLoadFailed: 'The PDF preview failed to load',
-      pdfViewerMissing: 'The PDF preview needs the dsh-pdf-viewer plugin — install and enable it, then reopen this tab',
+      officialPreview: 'Open native PDF preview',
+      preparingPreview: 'Preparing PDF preview…',
+      menuTextRead: 'Read text',
+      menuRefreshPreview: 'Refresh PDF preview',
       pdfPages: '{pages} pages',
       quote: 'Quote in chat',
       quoteSelection: 'Quote selection',
@@ -2641,12 +2557,24 @@ window.__ModuleLoader__.load({
         [props, signal],
       );
 
+      const previewSequence = useRef(0);
       const onOpen = useCallback(
-        (entry) => {
-          const address = props.addressOf(entry.ref);
-          tabActions.openResource(address);
+        async (entry, refresh = false) => {
+          if (!IS_DESKTOP_SHELL || !/\.(pdf|docx?|pptx?)$/i.test(entry.name)) {
+            tabActions.openResource(props.addressOf(entry.ref)); return;
+          }
+          const sequence = ++previewSequence.current;
+          setDetail({ title: entry.name, note: t('preparingPreview') });
+          try {
+            // tab.actions 绑定当前组件的 Session，切换会话不会借用全局身份。
+            const file = await openOfficialPreview({ ...props, remote: face() }, entry.ref, tab, refresh);
+            if (sequence === previewSequence.current) setDetail(undefined);
+            return file;
+          } catch (error) {
+            if (!signal.aborted && sequence === previewSequence.current) setDetail({ title: entry.name, note: error.message });
+          }
         },
-        [props, tabActions],
+        [props, tabActions, tab, t],
       );
 
       /**
@@ -2817,6 +2745,8 @@ window.__ModuleLoader__.load({
       };
 
       const menuActions = {
+        textRead: (entry) => { setMenu(undefined); tabActions.openResource(props.addressOf(entry.ref)); },
+        refreshPreview: async (entry) => { setMenu(undefined); await onOpen(entry, true); },
         /** Quote — no network at all, which is why it is the first item. */
         quote: (entry) => {
           if (!canQuote) return;
@@ -3437,6 +3367,8 @@ window.__ModuleLoader__.load({
               style: { ...MENU_STYLE, left: `${String(menu.x)}px`, top: `${String(menu.y)}px` },
               children: [
                 jsx('div', { key: 'head', style: MENU_HEAD_STYLE, children: menu.entry.name }),
+                menu.entry.kind === 'file' ? jsx('button', { key: 'textRead', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'textRead', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.textRead), style: MENU_ITEM_STYLE, children: t('menuTextRead') }) : null,
+                IS_DESKTOP_SHELL && /\.(pdf|docx?|pptx?)$/i.test(menu.entry.name) ? jsx('button', { key: 'refreshPreview', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'refreshPreview', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.refreshPreview), style: MENU_ITEM_STYLE, children: t('menuRefreshPreview') }) : null,
                 jsx('button', { key: 'quote', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'quote', disabled: !canQuote || menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.quote), style: { ...MENU_ITEM_STYLE, opacity: canQuote ? 1 : 0.45 }, children: t('menuQuote') }),
                 jsx('button', { key: 'open', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'open', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.openOnline), style: MENU_ITEM_STYLE, children: t('menuOpen') }),
                 jsx('div', { key: 'sep-1', role: 'separator', style: MENU_SEPARATOR_STYLE }),
@@ -3936,6 +3868,26 @@ window.__ModuleLoader__.load({
       ctx.effect(() => {
         const style = document.createElement('style');
         style.setAttribute('data-kdocs-style', '0.2.5');
+        // Ownership marker for the product's client-module kernel.
+        //
+        // `claimStyles` (`@deepseek-ai/dsh-client-modules/lib/client.js`) claims
+        // every UNTAGGED `<style>` when *any* module materializes, stamping it
+        // with THAT module's id; `removeOwnedStyles(id)` then deletes
+        // `style[data-plugin=<id>]` when that module is replaced, invalidated or
+        // pruned. This sheet is injected from `ctx.effect`, i.e. AFTER this
+        // plugin's own module was materialized, so without an owner it is
+        // adopted by whichever module materializes next and disappears with it —
+        // the panel stays mounted but loses its stylesheet.
+        //
+        // `data-plugin-css` is only the inventory LABEL the kernel reads back
+        // (`el.getAttribute("data-plugin-css") ?? id`); it confers NO ownership.
+        // The id must equal this bundle's `__ModuleLoader__.load({ id })` value.
+        // Measured 2026-10-09: same kernel mechanism as the casebench defect.
+        style.setAttribute('data-plugin', 'dsh-kdocs-inside');
+        // The kernel's inventory label (it reads `data-plugin-css ?? id` back when
+        // reporting owned styles). Purely informational — ownership is the
+        // `data-plugin` attribute above, not this one.
+        style.setAttribute('data-plugin-css', 'dsh-kdocs-inside/panel.css');
         style.textContent = [
           '[data-kdocs-view-tabs]::-webkit-scrollbar{display:none}',
           '[data-kdocs-menu-item]:not(:disabled):hover{background:var(--dsw-alias-interactive-bg-hover)}',
@@ -3951,20 +3903,7 @@ window.__ModuleLoader__.load({
         return () => style.remove();
       }, 'kdocs: panel stylesheet');
 
-      // The PDF renderer lives in `dsh-pdf-viewer`, so pdf.js, the page strip and
-      // the text layer exist once per page instead of once per plugin that wants
-      // to show a PDF. Waiting for the service (rather than reading it) is what
-      // keeps this package harmless in a composition that does not have the
-      // plugin: the PDF pane says which plugin is missing instead of rendering an
-      // empty frame that looks like a broken document.
-      ctx.inject(['pdfViewer'], (scoped) => {
-        ctx.effect(() => {
-          publishPdfViewer(scoped.pdfViewer);
-          return () => publishPdfViewer(undefined);
-        }, 'kdocs: the PDF renderer service');
-      });
-
-      ctx.inject(['remote.kdocs'], (scoped) => {
+      ctx.inject(['remote.kdocs', 'remote.workspaceFiles'], (scoped) => {
         // The resource protocol: metadata for `dsh-resource://kdocs/file/...`.
         ctx.effect(() => {
           const release = ctx.resources.register(createKDocsResourceProvider(() => scoped.remote.kdocs));
@@ -3980,7 +3919,8 @@ window.__ModuleLoader__.load({
           key: KDOCS_ID,
           locale: KDOCS_NS,
           // The seat spreads this factory's return value into the body's props.
-          inject: () => ({
+          inject: (sessionId) => ({
+            sessionId, workspaceFiles: scoped.remote.workspaceFiles,
             remote: scoped.remote.kdocs,
             addressOf: kdocsAddressOf,
           }),
@@ -4009,7 +3949,7 @@ window.__ModuleLoader__.load({
           name: 'sidebar.right.pane.tab',
           key: PREVIEW_ID,
           locale: KDOCS_NS,
-          inject: () => ({ remote: scoped.remote.kdocs }),
+          inject: (sessionId) => ({ sessionId, workspaceFiles: scoped.remote.workspaceFiles, remote: scoped.remote.kdocs }),
         }, guarded(KDocsPreview))), 'kdocs: kdocs-preview tab body');
 
         // M8: the four tools get their own card.
@@ -4065,10 +4005,12 @@ window.__ModuleLoader__.load({
     exports.KDocsPreview = KDocsPreview;
     // The desktop PDF pane and the shell flag, exported so tests can drive both
     // directions: web stubs must never mount the pane, a dsh-app: stub must.
-    exports.KDocsPdfPane = KDocsPdfPane;
+    exports.openOfficialPreview = openOfficialPreview;
+    exports.sessionFileAddress = sessionFileAddress;
+    exports.KDocsOfficialPreview = KDocsOfficialPreview;
     // The renderer hand-off, exported so a test can put the composition into the
     // state it asserts on through the same function the inject calls.
-    exports.publishPdfViewer = publishPdfViewer;
+
     exports.IS_DESKTOP_SHELL = IS_DESKTOP_SHELL;
     exports.KDocsPanelTitle = KDocsPanelTitle;
     exports.kdocsPreviewDefinition = kdocsPreviewDefinition;

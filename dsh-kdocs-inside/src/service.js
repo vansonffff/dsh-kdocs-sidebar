@@ -253,6 +253,13 @@ export class KDocsService extends TypertRemoteService {
     return this.provider.exportPdf(ref, options ?? {}, signal);
   }
 
+  preparePreview(ref, options, signal) {
+    return this.provider.preparePreview(ref, options ?? {}, signal);
+  }
+  async remotePreparePreview(ref, options, signal) {
+    return this.provider.preparePreview(ref, options ?? {}, signal);
+  }
+
   // ── The Remote face, as `remote.kdocs` reaches it ────────────────────────
   //
   // These return the same business values the seam above does. They are separate
@@ -382,18 +389,6 @@ export class KDocsService extends TypertRemoteService {
    */
   async remoteGetLink(ref, signal) {
     return this.provider.getLink(ref, signal);
-  }
-
-  /**
-   * Remote `exportPdf`.
-   *
-   * @param {any} ref - `{ driveId, fileId }`.
-   * @param {any} [options] - `{ refresh?: boolean }`.
-   * @param {AbortSignal} [signal] - cancels the call.
-   * @returns {Promise<any>} the business result.
-   */
-  async remoteExportPdf(ref, options, signal) {
-    return this.provider.exportPdf(ref, options ?? {}, signal);
   }
 
 }
