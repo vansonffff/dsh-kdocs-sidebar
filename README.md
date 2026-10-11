@@ -2,7 +2,7 @@
 
 在 DSH 右侧栏浏览金山云文档、阅读和引用正文，并提供四个只读 Agent 工具。
 
-当前候选：**dsh-kdocs-inside 0.4.6-rc.1**。这是 RC 预发布；稳定版仍为 [0.4.5](https://github.com/vansonffff/dsh-kdocs-sidebar/releases/tag/v0.4.5)。
+当前 Latest：**dsh-kdocs-inside 0.4.6-rc.1**。版本号保留 rc.1；该 GitHub Release 已按用户要求正式发布并设为 Latest，以下实测范围与待验项目继续适用。
 
 | 插件 | 版本 | 功能 |
 |---|---|---|
@@ -28,7 +28,7 @@ kdocs-cli auth login
 kdocs-cli auth status
 ```
 
-从 [v0.4.6-rc.1 预发布](https://github.com/vansonffff/dsh-kdocs-sidebar/releases/tag/v0.4.6-rc.1)下载 `dsh-kdocs-inside-0.4.6-rc.1.tgz`，在 DSH 插件管理页添加本地安装包。CLI Profile 可用官方入口安装下载的 TGZ：
+从 [v0.4.6-rc.1 发行版](https://github.com/vansonffff/dsh-kdocs-sidebar/releases/tag/v0.4.6-rc.1)下载 `dsh-kdocs-inside-0.4.6-rc.1.tgz`，在 DSH 插件管理页添加本地安装包。CLI Profile 可用官方入口安装下载的 TGZ：
 
 ```sh
 dsh plugin --profile <你的Profile> add <下载的TGZ路径>
