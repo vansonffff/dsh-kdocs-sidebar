@@ -7,30 +7,33 @@ import { promisify } from 'node:util';
 import { KDocsError } from '../errors.js';
 
 const exec = promisify(execFile);
+export const IMAGE_EXTENSIONS = Object.freeze(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg']);
 const PREFIX = 'dsh-kdocs-preview-';
 const DAY = 24 * 60 * 60 * 1000;
 const fail = (message) => new KDocsError('unsupported', { operation: 'preview-cache', message });
 
 /** 云端名称只用于显示安全的文件名，目录身份由随机标识生成。 */
-export function previewName(name) {
+export function previewName(name, extension = 'pdf') {
+  if (extension !== 'pdf' && !IMAGE_EXTENSIONS.includes(extension)) throw fail('不支持的预览格式。');
   let stem = String(name).replace(/\.[^.]*$/, '').replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, '_').replace(/[. ]+$/g, '').slice(0, 80);
   if (!stem || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(stem)) stem = '_' + (stem || 'preview');
-  return stem + '.pdf';
+  return stem + '.' + extension;
 }
 
 /** 下载地址只能在 Host 内使用；每次重定向都重新校验。 */
 export function checkPreviewUrl(raw) {
   let url;
-  try { url = new URL(raw); } catch { throw fail('PDF 预览失败：下载地址无效。'); }
+  try { url = new URL(raw); } catch { throw fail('文件预览失败：下载地址无效。'); }
   if (url.protocol !== 'https:' || url.username || url.password || url.port && url.port !== '443'
     || !/(^|\.)(wps\.cn|wps365\.com|kdocs\.cn|wpscdn\.cn|wpscdn\.com|kingsoft\.com)$/i.test(url.hostname)) {
-    throw fail('PDF 预览失败：下载地址不属于支持的金山 HTTPS 存储域名。');
+    throw fail('文件预览失败：下载地址不属于支持的金山 HTTPS 存储域名。');
   }
   return url;
 }
 
 /** 有界流式下载，不把签名地址或底层 fetch 异常发给前端。 */
-export async function downloadPreview(raw, target, { signal, maxBytes = 30 * 1024 * 1024, hashes = [], fetcher = fetch } = {}) {
+export async function downloadPreview(raw, target, { signal, maxBytes = 30 * 1024 * 1024, hashes = [], extension = 'pdf', fetcher = fetch } = {}) {
+  previewName('preview', extension);
   let handle;
   let reader;
   let response;
@@ -41,13 +44,13 @@ export async function downloadPreview(raw, target, { signal, maxBytes = 30 * 102
       response = await fetcher(url, { redirect: 'manual', signal, credentials: 'omit' });
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       await response.body?.cancel();
-      if (i === 3) throw fail('PDF 预览失败：下载重定向次数过多。');
+      if (i === 3) throw fail('文件预览失败：下载重定向次数过多。');
       url = checkPreviewUrl(new URL(response.headers.get('location') ?? '', url).href);
     }
     if (response.status === 403) throw new KDocsError('permission-denied', { message: '无法取得该文件的预览副本，请检查金山文档下载权限。' });
-    if (!response.ok || !response.body) throw fail('PDF 预览失败：无法下载该文件。');
+    if (!response.ok || !response.body) throw fail('文件预览失败：无法下载该文件。');
     const announced = Number(response.headers.get('content-length'));
-    if (announced > maxBytes) throw fail('PDF 超过单文件预览上限。');
+    if (announced > maxBytes) throw fail('文件超过单文件预览上限。');
     handle = await open(target, 'wx', 0o600);
     reader = response.body.getReader();
     const algorithms = new Map(['md5', 'sha1', 'sha256'].map(a => [a, createHash(a)]));
@@ -58,33 +61,51 @@ export async function downloadPreview(raw, target, { signal, maxBytes = 30 * 102
       const { done, value } = await reader.read();
       if (done) break;
       size += value.length;
-      if (size > maxBytes) throw fail('PDF 超过单文件预览上限。');
-      if (head.length < 5) head = Buffer.concat([head, Buffer.from(value).subarray(0, 5 - head.length)]);
-      if (head.length === 5 && head.toString('latin1') !== '%PDF-') throw fail('下载回来的内容不是 PDF，无法预览。');
+      if (size > maxBytes) throw fail('文件超过单文件预览上限。');
+      if (head.length < 1024) head = Buffer.concat([head, Buffer.from(value).subarray(0, 1024 - head.length)]);
+      if (extension === 'pdf' && head.length >= 5 && head.subarray(0, 5).toString('latin1') !== '%PDF-') throw fail('下载回来的内容不是 PDF，无法预览。');
       for (const hash of algorithms.values()) hash.update(value);
       await handle.writeFile(value);
     }
-    if (head.toString('latin1') !== '%PDF-') throw fail('下载回来的内容不是 PDF，无法预览。');
-    if (announced > 0 && size !== announced) throw fail('PDF 下载不完整。');
+    assertPreviewHeader(head, extension);
+    if (announced > 0 && size !== announced) throw fail('文件下载不完整。');
     const digests = Object.fromEntries([...algorithms].map(([a, h]) => [a, h.digest('hex')]));
     for (const item of hashes ?? []) {
       const algorithm = String(item.type ?? item.algorithm ?? item.name ?? '').toLowerCase().replace(/-/g, '');
       const value = item.sum ?? item.value ?? item.hash ?? item.digest;
-      if (digests[algorithm] && (typeof value !== 'string' || digests[algorithm] !== value.toLowerCase())) throw fail('PDF 哈希校验不一致，无法预览。');
+      if (digests[algorithm] && (typeof value !== 'string' || digests[algorithm] !== value.toLowerCase())) throw fail('文件哈希校验不一致，无法预览。');
     }
     await handle.sync();
     complete = true;
     return size;
   } catch (error) {
     if (error instanceof KDocsError) throw error;
-    if (signal?.aborted) throw new KDocsError(signal.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted', { message: signal.reason?.name === 'TimeoutError' ? 'PDF 下载超时。' : '预览准备已取消。' });
-    throw fail('PDF 预览失败：无法下载该文件。');
+    if (signal?.aborted) throw new KDocsError(signal.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted', { message: signal.reason?.name === 'TimeoutError' ? '文件下载超时。' : '预览准备已取消。' });
+    throw fail('文件预览失败：无法下载该文件。');
   } finally {
     await reader?.cancel().catch(() => {});
     if (!reader) await response?.body?.cancel().catch(() => {});
     await handle?.close();
     if (!complete && handle) await rm(target, { force: true });
   }
+}
+
+/** Reject mislabeled login/error pages before publishing a local preview. */
+function assertPreviewHeader(head, extension) {
+  const ascii = head.toString('latin1');
+  const valid = {
+    pdf: () => ascii.startsWith('%PDF-'),
+    png: () => head.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])),
+    jpg: () => head.length >= 3 && head[0] === 255 && head[1] === 216 && head[2] === 255,
+    jpeg: () => head.length >= 3 && head[0] === 255 && head[1] === 216 && head[2] === 255,
+    gif: () => /^GIF8[79]a/.test(ascii),
+    webp: () => ascii.startsWith('RIFF') && ascii.slice(8, 12) === 'WEBP',
+    bmp: () => ascii.startsWith('BM'),
+    ico: () => head.length >= 6 && head[0] === 0 && head[1] === 0 && head[2] === 1 && head[3] === 0 && head.readUInt16LE(4) > 0,
+    // The official renderer uses a static img Blob URL, never inline SVG/HTML.
+    svg: () => /^(?:\s|<\?xml[^>]*\?>|<!--[\s\S]*?-->)*<svg(?:\s|>)/i.test(head.toString('utf8').replace(/^\uFEFF/, '')),
+  }[extension]?.();
+  if (!valid) throw fail(extension === 'pdf' ? '下载回来的内容不是 PDF，无法预览。' : '下载回来的内容不是受支持的图片，无法预览。');
 }
 
 /** 无可靠跨插件关闭通知：返回过的文件保留至实例停止，容量不足明确拒绝，避免删除仍打开的文件。 */
@@ -113,7 +134,8 @@ export class KDocsPreviewCache {
     })();
     return this.rootPromise;
   }
-  async prepare(key, name, loader, { refresh = false, signal } = {}) {
+  async prepare(key, name, loader, { refresh = false, signal, extension = 'pdf' } = {}) {
+    previewName(name, extension);
     this.controller.signal.throwIfAborted(); signal?.throwIfAborted();
     // 每个等待者都拥有自己的取消；最后一个取消时才取消共享下载。
     let job = this.pending.get(key);
@@ -128,7 +150,7 @@ export class KDocsPreviewCache {
         if (!entry && this.entries.size >= this.maxEntries) throw fail('预览缓存已满，请重启插件后重试。');
         const dir = entry?.dir ?? join(root, randomUUID());
         await mkdir(dir, { mode: 0o700, recursive: true });
-        const path = entry?.result.absolutePath ?? join(dir, previewName(name));
+        const path = entry?.result.absolutePath ?? join(dir, previewName(name, extension));
         const temp = join(dir, randomUUID() + '.partial');
         try {
           const loaded = await loader(temp, combined);
@@ -136,7 +158,7 @@ export class KDocsPreviewCache {
           const total = [...this.entries.values()].reduce((n, e) => n + e.result.size, 0) - (entry?.result.size ?? 0) + loaded.size;
           if (total > this.maxBytes) throw fail('预览缓存超过总容量上限，请重启插件后重试。');
           await rename(temp, path);
-          const result = { kind: 'pdf-file', absolutePath: path, name: basename(path), size: loaded.size, source: loaded.source, cached: false };
+          const result = { kind: extension === 'pdf' ? 'pdf-file' : 'image-file', absolutePath: path, name: basename(path), size: loaded.size, source: loaded.source, cached: false };
           this.entries.delete(key); this.entries.set(key, { dir, result, at: Date.now() });
           return result;
         } finally { await rm(temp, { force: true }); if (!this.entries.has(key)) await rm(dir, { recursive: true, force: true }); }

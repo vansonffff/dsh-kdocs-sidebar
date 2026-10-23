@@ -69,6 +69,14 @@ export const KDOCS_INVOCATIONS = [
     cancellable: true,
   },
   {
+    method: 'listSorted', implementation: 'remoteListSorted',
+    parameters: [
+      { name: 'parent', kind: 'fileRef', optional: true },
+      { name: 'cursor', kind: 'string', optional: true },
+      { name: 'options', kind: 'sortOptions' },
+    ], valueKind: 'page', cancellable: true,
+  },
+  {
     method: 'listVersions',
     implementation: 'remoteListVersions',
     parameters: [{ name: 'ref', kind: 'fileRef' }],
@@ -101,6 +109,14 @@ export const KDOCS_INVOCATIONS = [
     ],
     valueKind: 'page',
     cancellable: true,
+  },
+  {
+    method: 'listViewSorted', implementation: 'remoteListViewSorted',
+    parameters: [
+      { name: 'view', kind: 'string' },
+      { name: 'cursor', kind: 'string', optional: true },
+      { name: 'options', kind: 'sortOptions' },
+    ], valueKind: 'page', cancellable: true,
   },
   {
     method: 'search',

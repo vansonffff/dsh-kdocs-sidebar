@@ -23,7 +23,7 @@
  * @module kdocs/client/provider
  */
 
-import { KDocsPreviewCache, downloadPreview } from './preview-cache.js';
+import { KDocsPreviewCache, downloadPreview, IMAGE_EXTENSIONS } from './preview-cache.js';
 import { KDocsError } from '../errors.js';
 import { asRecord, isAbortSignal } from '../internal.js';
 import { LOGIN_TIMEOUT_MS, READ_TIMEOUT_MS, authUrlIn, cliVersion, discoverCli, resolveCli, runAction, runCli } from './cli.js';
@@ -321,11 +321,19 @@ export class KDocsCliProvider {
    * @param {import('../types.js').KDocsFileRef} [parent] - folder to list; omitted means the drive root.
    * @param {string} [cursor] - opaque cursor from a previous page.
    * @param {AbortSignal} [signal] - cancels the call.
+   * @param {import('../types.js').KDocsSortOptions} [sort] - server-side sorting.
    * @returns {Promise<import('../types.js').KDocsPage>} one page of entries.
    */
-  async list(parent, cursor, signal) {
+  async list(parent, cursor, signal, sort) {
     /** @type {Record<string, unknown>} */
     const params = { page_size: this.options.pageSize };
+    if (sort !== undefined) {
+      if (!sort || !['fname', 'mtime'].includes(sort.orderBy) || !['asc', 'desc'].includes(sort.order)) {
+        throw new KDocsError('invalid-request', { operation: 'drive.list', message: '无效的排序选项' });
+      }
+      params.order_by = sort.orderBy;
+      params.order = sort.order;
+    }
     if (cursor !== undefined && cursor !== '') params.page_token = cursor;
 
     let outcome;
@@ -445,10 +453,11 @@ export class KDocsCliProvider {
    * @param {import('../types.js').KDocsView} view - which view to list.
    * @param {string} [cursor] - `nextCursor` from a previous page.
    * @param {AbortSignal} [signal] - cancels the call.
+   * @param {import('../types.js').KDocsSortOptions} [sort] - modification time for shared views only.
    * @returns {Promise<import('../types.js').KDocsPage>} one page of that view.
    * @throws {KDocsError} with `'invalid-request'` for an unknown view.
    */
-  async listView(view, cursor, signal) {
+  async listView(view, cursor, signal, sort) {
     const source = VIEW_SOURCES[view];
     if (source === undefined) {
       throw new KDocsError('invalid-request', {
@@ -458,6 +467,13 @@ export class KDocsCliProvider {
     }
     /** @type {Record<string, unknown>} */
     const params = { page_size: view === 'team' ? Math.min(this.options.pageSize, 100) : this.options.pageSize, ...source.params };
+    if (sort !== undefined) {
+      if (!['sharedWithMe', 'sharedByMe'].includes(view) || sort?.orderBy !== 'mtime' || !['asc', 'desc'].includes(sort.order)) {
+        throw new KDocsError('invalid-request', { operation: 'drive.list-view', message: '当前视图不支持此排序方式' });
+      }
+      params.order_by = sort.orderBy;
+      params.order = sort.order;
+    }
     if (typeof cursor === 'string' && cursor !== '') params.page_token = cursor;
 
     const outcome = await this.runAction('drive', source.action, params, {
@@ -903,13 +919,15 @@ export class KDocsCliProvider {
     this.getCliPath();
     const info = await this.stat(ref, signal);
     const extension = /\.([^.]+)$/.exec(info.name)?.[1]?.toLowerCase();
-    if (!['pdf', 'doc', 'docx', 'ppt', 'pptx'].includes(extension)) {
-      throw new KDocsError('unsupported', { message: '该文件类型不支持 PDF 预览，请使用文本阅读或在金山文档打开。' });
+    const image = IMAGE_EXTENSIONS.includes(extension);
+    if (!image && !['pdf', 'doc', 'docx', 'ppt', 'pptx'].includes(extension)) {
+      throw new KDocsError('unsupported', { message: '该文件类型不支持 DSH 本地预览，请在金山文档打开。' });
     }
-    return this.previewCache.prepare(`${ref.driveId}/${ref.fileId}`, info.name, async (target, sharedSignal) => {
-      const bounded = AbortSignal.any([sharedSignal, AbortSignal.timeout(extension === 'pdf' ? 60_000 : this.options.exportTimeoutMs + 60_000)]);
+    const direct = image || extension === 'pdf';
+    return this.previewCache.prepare(`${ref.driveId}/${ref.fileId}/${image ? extension : 'pdf'}`, info.name, async (target, sharedSignal) => {
+      const bounded = AbortSignal.any([sharedSignal, AbortSignal.timeout(direct ? 60_000 : this.options.exportTimeoutMs + 60_000)]);
       let url; let hashes = [];
-      if (extension === 'pdf') {
+      if (direct) {
         const response = await this.runAction('drive', 'download-file', {
           file_id: ref.fileId, drive_id: ref.driveId, with_hash: true,
           storage_base_domain: 'wps365.com', internal: false,
@@ -920,9 +938,9 @@ export class KDocsCliProvider {
         url = await this.officePdfUrl(ref, bounded);
       }
       const downloadSignal = AbortSignal.any([bounded, AbortSignal.timeout(60_000)]);
-      const size = await downloadPreview(url, target, { signal: downloadSignal, maxBytes: this.options.maxPdfBytes, hashes });
-      return { size, source: extension === 'pdf' ? 'download' : 'export' };
-    }, { refresh: options.refresh === true, signal });
+      const size = await downloadPreview(url, target, { signal: downloadSignal, maxBytes: this.options.maxPdfBytes, hashes, extension: image ? extension : 'pdf' });
+      return { size, source: direct ? 'download' : 'export' };
+    }, { refresh: options.refresh === true, signal, extension: image ? extension : 'pdf' });
   }
 
 }

@@ -300,6 +300,18 @@ export class KDocsService extends TypertRemoteService {
   }
 
   /**
+   * Sorted directory listing; legacy list and model tools keep their contract.
+   * @param {import('./types.js').KDocsFileRef} [parent]
+   * @param {string} [cursor]
+   * @param {import('./types.js').KDocsSortOptions} options
+   * @param {AbortSignal} [signal]
+   */
+  async remoteListSorted(parent, cursor, options, signal) {
+    return this.provider.list(parent, cursor, signal, options);
+  }
+
+
+  /**
    * Remote `rename`.
    *
    * @param {import('./types.js').KDocsFileRef} ref - the entry to rename.
@@ -322,6 +334,12 @@ export class KDocsService extends TypertRemoteService {
   async remoteListView(view, cursor, signal) {
     return this.provider.listView(view, cursor, signal);
   }
+
+  /** View sorting is limited to fields supported by the corresponding CLI action. */
+  async remoteListViewSorted(view, cursor, options, signal) {
+    return this.provider.listView(view, cursor, signal, options);
+  }
+
 
   /**
    * Remote `listVersions`.

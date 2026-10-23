@@ -15,6 +15,13 @@
  */
 
 /**
+ * Server-side directory ordering (independent of model tool defaults).
+ * @typedef {object} KDocsSortOptions
+ * @property {'fname'|'mtime'} orderBy - file/folder name or modification time.
+ * @property {'asc'|'desc'} order - ascending or descending.
+ */
+
+/**
  * Stable identity of one cloud document or folder.
  *
  * `driveId` is the cloud drive the item lives in (the CLI reports

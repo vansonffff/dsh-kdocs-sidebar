@@ -1,6 +1,6 @@
 {
   "name": "dsh-kdocs-inside",
-  "version": "0.4.6-rc.1",
+  "version": "0.4.6-rc.3",
   "description": "金山文档 (KDocs) for DeepSeek Harness — browse, preview and quote documents from the right sidebar, with four read-only Agent tools backed by the official kdocs-cli",
   "type": "module",
   "main": "./src/index.js",
@@ -58,8 +58,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
-    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2"
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2 || 0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 || 0.2.1-rc.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.4",
@@ -70,6 +70,10 @@
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:live": "KDOCS_LIVE=require node --test test/m2-gate.test.js test/tools.test.js test/resource.test.js test/remote-contract.test.js"
   },
   "repository": {
     "type": "git",
@@ -90,8 +94,5 @@
       "optional": true
     }
   },
-  "scripts": {
-    "test": "node --test test/*.test.js",
-    "test:live": "KDOCS_LIVE=require node --test test/m2-gate.test.js test/tools.test.js test/resource.test.js test/remote-contract.test.js"
-  }
+  "packageManager": "pnpm@11.28.5"
 }

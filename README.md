@@ -1,5 +1,8 @@
 # 金山文档 for DeepSeek Harness
 
+当前源码候选：**0.4.6-rc.3**（RC / 试用，非稳定版），包含紧凑引用、目录排序、紫色 OTL 图标和原生图片预览。源码与安装说明见 [dsh-kdocs-inside](./dsh-kdocs-inside/README.md)。已有 GitHub Release 的 Latest 状态不因源码同步改变。
+
+
 在 DSH 右侧栏浏览金山云文档、阅读和引用正文，并提供四个只读 Agent 工具。
 
 当前 Latest：**dsh-kdocs-inside 0.4.6-rc.1**。版本号保留 rc.1；该 GitHub Release 已按用户要求正式发布并设为 Latest，以下实测范围与待验项目继续适用。

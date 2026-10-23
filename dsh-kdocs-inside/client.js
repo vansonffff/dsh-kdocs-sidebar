@@ -193,6 +193,7 @@ function sessionFileAddress(sessionId, path) {
         ],
         cancellable: true,
       },
+      { method: 'listSorted', implementation: 'remoteListSorted', parameters: [{ name: 'parent', optional: true }, { name: 'cursor', optional: true }, { name: 'options', optional: false }], cancellable: true },
       { method: 'listVersions', implementation: 'remoteListVersions', parameters: [{ name: 'ref' }], cancellable: true },
       { method: 'listComments', implementation: 'remoteListComments', parameters: [{ name: 'ref' }], cancellable: true },
       { method: 'rename', implementation: 'remoteRename', parameters: [{ name: 'ref' }, { name: 'newName' }], cancellable: true },
@@ -205,6 +206,7 @@ function sessionFileAddress(sessionId, path) {
         ],
         cancellable: true,
       },
+      { method: 'listViewSorted', implementation: 'remoteListViewSorted', parameters: [{ name: 'view', optional: false }, { name: 'cursor', optional: true }, { name: 'options', optional: false }], cancellable: true },
       { method: 'search', implementation: 'remoteSearch', parameters: [{ name: 'query' }, { name: 'cursor', optional: true }, { name: 'options', optional: true }], cancellable: true },
       { method: 'stat', implementation: 'remoteStat', parameters: [{ name: 'ref' }], cancellable: true },
       {
@@ -797,13 +799,17 @@ function sessionFileAddress(sessionId, path) {
       return ref === undefined ? undefined : ref.fileId;
     }
 
+    function nativePreviewName(name) {
+      return /\.(pdf|docx?|pptx?|png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(name);
+    }
+
     /** 从当前 Tab 的 Session 注入构造官方资源；读取失败留在原页面。 */
     async function openOfficialPreview(props, ref, tab, refresh = false) {
       if (!props.sessionId) throw new Error('无法取得当前标签页的 Session 身份。');
       const result = unwrapResult(await props.remote.preparePreview(ref, { refresh }, tab.signal));
       if (!result.ok) throw new Error(result.error?.message ?? '文档转换失败，无法生成预览。');
       const file = result.value;
-      if (file?.kind !== 'pdf-file' || typeof file.absolutePath !== 'string') throw new Error('预览文件响应无效。');
+      if (!['pdf-file', 'image-file'].includes(file?.kind) || typeof file.absolutePath !== 'string') throw new Error('预览文件响应无效。');
       const stat = unwrapResult(await props.workspaceFiles.stat(props.sessionId, file.absolutePath, tab.signal));
       if (!stat.ok) throw new Error('DSH 无法读取预览缓存，请检查本地文件访问权限。');
       tab.signal.throwIfAborted();
@@ -935,6 +941,7 @@ function sessionFileAddress(sessionId, path) {
       const canQuote = typeof props.inputActions?.setDraft === 'function';
       /** Write one marker into the composer, keeping whatever is already typed. */
       const writeMarker = (marker) => {
+        if (props.insertReference?.(marker) === true) return;
         const current = typeof draft === 'string' ? draft.trim() : '';
         // Appending keeps what the user already typed: quoting twice must not
         // silently drop the first document.
@@ -1263,11 +1270,14 @@ function sessionFileAddress(sessionId, path) {
       embedReload: '刷新「原版」',
       pdfLoading: '正在生成 PDF 预览（首次需要几秒导出）…',
       pdfLoadFailed: 'PDF 预览加载失败',
-      officialPreview: '打开官方 PDF 预览',
-      preparingPreview: '正在准备 PDF 预览…',
+      officialPreview: '打开 DSH 本地预览',
+      unsupportedImage: 'DSH 当前不支持此图片格式，请转为 PNG/JPEG 或在金山文档打开。',
+      preparingPreview: '正在准备本地预览…',
       menuTextRead: '文本阅读',
-      menuRefreshPreview: '刷新 PDF 预览',
+      menuRefreshPreview: '刷新本地预览',
       pdfPages: '共 {pages} 页',
+      sort: '排序',
+      'sort.name-asc': '名称升序', 'sort.name-desc': '名称降序', 'sort.modified-desc': '最近修改', 'sort.modified-asc': '最早修改',
       quote: '引用到对话',
       quoteSelection: '引用选中片段',
       viewTree: '我的云文档',
@@ -1341,11 +1351,14 @@ function sessionFileAddress(sessionId, path) {
       embedReload: 'Reload Original view',
       pdfLoading: 'Generating the PDF preview (the first export takes a few seconds)…',
       pdfLoadFailed: 'The PDF preview failed to load',
-      officialPreview: 'Open native PDF preview',
-      preparingPreview: 'Preparing PDF preview…',
+      officialPreview: 'Open native preview',
+      unsupportedImage: 'DSH does not support this image format. Convert to PNG/JPEG or open in KDocs.',
+      preparingPreview: 'Preparing native preview…',
       menuTextRead: 'Read text',
-      menuRefreshPreview: 'Refresh PDF preview',
+      menuRefreshPreview: 'Refresh native preview',
       pdfPages: '{pages} pages',
+      sort: 'Sort',
+      'sort.name-asc': 'Name ascending', 'sort.name-desc': 'Name descending', 'sort.modified-desc': 'Recently modified', 'sort.modified-asc': 'Oldest modified',
       quote: 'Quote in chat',
       quoteSelection: 'Quote selection',
       viewTree: 'My drive',
@@ -1592,13 +1605,78 @@ function sessionFileAddress(sessionId, path) {
      * @param {string} name - the document's display name.
      * @param {string} address - its `dsh-resource://` address.
      * @param {string} [excerpt] - the passage the user selected, when short enough.
+     * @param {string} [kind] - 已知对象类型，目录引用直接提示列目录工具。
      * @returns {string} the marker.
      */
-    function kdocsQuoteMarker(name, address, excerpt) {
+    function kdocsQuoteMarker(name, address, excerpt, kind) {
+      if (kind === 'directory') return `📁金山文档文件夹「${name}」 ${address}\n用 kdocs_list 列出内容。`;
       const head = `📄金山文档「${name}」 ${address}`;
       const passage = typeof excerpt === 'string' ? excerpt.trim() : '';
       if (passage === '' || passage.length > QUOTE_EXCERPT_LIMIT) return head;
       return `${head}\n选中的片段：\n${passage}`;
+    }
+
+    // Keep the existing, tool-readable marker as both the clipboard and wire
+    // projection. Only its presentation changes; no host rewrite is necessary.
+    const KDOCS_REFERENCE_SOURCE = 'kdocs-reference';
+    function matchKDocsReference(text, from = 0) {
+      const pattern = /[📄📁]金山文档(文件夹)?「([^\r\n]*?)」 (dsh-resource:\/\/kdocs\/file\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+)(?:\n用 kdocs_list 列出内容。)?/gu;
+      pattern.lastIndex = from;
+      const match = pattern.exec(text);
+      if (!match) return undefined;
+      return { id: KDOCS_REFERENCE_SOURCE, start: match.index, end: pattern.lastIndex,
+        data: { name: match[2], address: match[3], directory: Boolean(match[1]) } };
+    }
+
+    function KDocsReferenceNode(props) {
+      const data = props.node?.data;
+      if (!data) return null;
+      return jsxs('span', {
+        'data-kdocs-reference': '', title: data.name,
+        style: { display: 'inline-flex', verticalAlign: 'middle', alignItems: 'center',
+          gap: '8px', maxWidth: 'min(260px, 100%)', boxSizing: 'border-box',
+          padding: '4px 8px', borderRadius: '12px',
+          border: '1px solid var(--dsw-alias-border-l3)',
+          background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)',
+          fontSize: '13px', lineHeight: '20px' },
+        children: [jsx('span', { 'aria-hidden': true, children: data.directory ? '📁' : '📄' }),
+          jsx('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }, children: data.name })],
+      });
+    }
+
+    function insertKDocsReference(ctx, sessionId, marker) {
+      const node = matchKDocsReference(marker);
+      if (!node || !sessionId) return false;
+      const actx = ctx.get('sessions')?.scope(sessionId);
+      const input = actx?.get('conversation')?.input.for(actx);
+      const store = input?.state;
+      const state = typeof store?.getSnapshot === 'function' ? store.getSnapshot() : store?.snapshot ?? store?.value;
+      if (!state || !['plain', 'claimed'].includes(state.phase)) return false;
+      let end = String(state.draft ?? '').length;
+      for (const occurrence of state.occurrences ?? []) {
+        if (!Number.isFinite(occurrence.length) || occurrence.length < 1) return false;
+        end -= occurrence.length - 1;
+      }
+      const name = node.data.name;
+      const chars = [...name];
+      const label = (node.data.directory ? '📁 ' : '') + (chars.length > 18 ? chars.slice(0, 18).join('') + '…' : name);
+      return actx.bail(actx, 'slash/input-insert-reference', {
+        reference: { source: KDOCS_REFERENCE_SOURCE, ref: marker, label, appearance: 'file', clipboardText: marker },
+        span: { start: end, end, draftRev: state.draftRev },
+      }) === true;
+    }
+
+    const SORT_CHOICES = [
+      { id: 'name-asc', orderBy: 'fname', order: 'asc' },
+      { id: 'name-desc', orderBy: 'fname', order: 'desc' },
+      { id: 'modified-desc', orderBy: 'mtime', order: 'desc' },
+      { id: 'modified-asc', orderBy: 'mtime', order: 'asc' },
+    ];
+    const TIME_SORT_VIEWS = ['sharedWithMe', 'sharedByMe'];
+    const SORT_STORAGE = 'dsh-kdocs-inside.sort.v1';
+    function readDirectorySort() {
+      try { return SORT_CHOICES.find((item) => item.id === window.localStorage.getItem(SORT_STORAGE)) ?? SORT_CHOICES[0]; }
+      catch { return SORT_CHOICES[0]; }
     }
 
     /** The level key of one folder. */
@@ -1899,7 +1977,7 @@ function sessionFileAddress(sessionId, path) {
       radius: '8px',
       padding: '0 8px',
       gap: '6px',
-      height: '24px',
+      height: '28px',
       /** One nesting level. */
       indent: '14px',
     };
@@ -1918,7 +1996,7 @@ function sessionFileAddress(sessionId, path) {
      * (icons and metadata), `interactive-bg-hover` (hover), `border-l3` (dividers).
      *
      * `height` is declared rather than left to padding: the icon column must not be
-     * allowed to grow the row, and a declared height plus `box-sizing` makes 24px a
+     * allowed to grow the row, and a declared height plus `box-sizing` makes 28px a
      * property of the row instead of a consequence of its contents.
      */
     const ROW_STYLE = {
@@ -1970,7 +2048,7 @@ function sessionFileAddress(sessionId, path) {
     /**
      * A search field that reads as part of the panel rather than a default input.
      *
-     * It shares the file rows' 24px height and 8px radius on purpose: the field,
+     * It shares the file rows' 28px height and 8px radius on purpose: the field,
      * the scope control and the rows are one column of equally-sized targets, so
      * the panel reads as a list with a filter rather than a form above a list.
      *
@@ -2060,6 +2138,11 @@ function sessionFileAddress(sessionId, path) {
         color: 'var(--dsw-static-blue-500)',
         body: '<path d="M3.4 2.6a1 1 0 0 1 1-1h4.4L12 4.7v8.7a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1Z" fill="currentColor" fill-opacity=".22"/><path d="M8.6 1.5v2.3a1 1 0 0 0 1 1H12Z" fill="currentColor" fill-opacity=".5"/><path d="M4.4 11.9h7.2v1.2H4.4Z" fill="currentColor"/>',
       },
+      otl: {
+        // User-requested purple; this host palette has no static purple token.
+        color: '#8b5cf6',
+        body: '<path d="M3.4 2.6a1 1 0 0 1 1-1h4.4L12 4.7v8.7a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1Z" fill="currentColor" fill-opacity=".22"/><path d="M8.6 1.5v2.3a1 1 0 0 0 1 1H12Z" fill="currentColor" fill-opacity=".5"/><path d="M4.8 6.6h6.1v1.1H4.8Zm0 2.5h6.1v1.1H4.8Zm0 2.5h4.2v1.1H4.8Z" fill="currentColor"/>',
+      },
       sheet: {
         color: 'var(--dsw-static-green-500)',
         body: '<rect x="2.6" y="2.2" width="10.8" height="11.6" rx="1.2" fill="currentColor" fill-opacity=".22"/><path d="M2.6 5.6h10.8v1.1H2.6Zm0 3.3h10.8v1.1H2.6Z" fill="currentColor" fill-opacity=".55"/><path d="M7.5 5.6h1.2v8.2H7.5Z" fill="currentColor" fill-opacity=".55"/>',
@@ -2096,6 +2179,7 @@ function sessionFileAddress(sessionId, path) {
      * document.
      */
     const FILE_KINDS = {
+      otl: ['otl'],
       doc: ['doc', 'docx', 'dot', 'dotx', 'rtf', 'wps'],
       sheet: ['xls', 'xlsx', 'xlsm', 'csv', 'tsv', 'et', 'ett', 'dbt', 'dbsheet'],
       slides: ['ppt', 'pptx', 'pps', 'ppsx', 'dps', 'dpt'],
@@ -2454,6 +2538,12 @@ function sessionFileAddress(sessionId, path) {
       const signal = tab.signal;
       const tabActions = tab.actions;
       const [state, setState] = useState(restoredPanelState);
+      const [directorySort, setDirectorySort] = useState(readDirectorySort);
+      const sortRef = useRef(directorySort);
+      const sortGeneration = useRef(0);
+      const [sortMenu, setSortMenu] = useState(undefined);
+      const sortButtonRef = useRef(null);
+      const sortMenuRef = useRef(null);
       // Read the latest state inside async callbacks without re-creating them.
       const stateRef = useRef(state);
       stateRef.current = state;
@@ -2477,6 +2567,8 @@ function sessionFileAddress(sessionId, path) {
       const [detail, setDetail] = useState(undefined);
       const [renameDraft, setRenameDraft] = useState(undefined);
       const [menuBusy, setMenuBusy] = useState(false);
+
+      useEffect(() => { setSortMenu(undefined); }, [state.view, state.search.active]);
 
       // Diagnostics are opt-in and bounded to this panel's lifetime: nothing
       // reaches `window` unless `localStorage['kdocs-debug'] === '1'` asked for
@@ -2504,6 +2596,75 @@ function sessionFileAddress(sessionId, path) {
         if (searchTimerRef.current !== undefined) clearTimeout(searchTimerRef.current);
       }, []);
 
+      // The generation check runs before any caller applies a page.
+      const listDirectory = async (parent, cursor, requestSignal) => {
+        const generation = sortGeneration.current;
+        try {
+          const result = await face().listSorted(parent, cursor, { orderBy: sortRef.current.orderBy, order: sortRef.current.order }, requestSignal);
+          return generation === sortGeneration.current ? result : undefined;
+        } catch (error) {
+          if (generation !== sortGeneration.current) return undefined;
+          throw error;
+        }
+      };
+      const sortSupported = (choice) => !state.search.active && (state.view === 'tree' || (TIME_SORT_VIEWS.includes(state.view) && choice.orderBy === 'mtime'));
+      const listViewForSort = async (view, cursor, requestSignal) => {
+        const generation = sortGeneration.current;
+        try {
+          const choice = sortRef.current;
+          const result = TIME_SORT_VIEWS.includes(view) && choice.orderBy === 'mtime'
+            ? await face().listViewSorted(view, cursor, { orderBy: choice.orderBy, order: choice.order }, requestSignal)
+            : await face().listView(view, cursor, requestSignal);
+          return generation === sortGeneration.current ? result : undefined;
+        } catch (error) {
+          if (generation !== sortGeneration.current) return undefined;
+          throw error;
+        }
+      };
+      const chooseSort = async (choice) => {
+        if (!sortSupported(choice)) return;
+        setSortMenu(undefined);
+        sortButtonRef.current?.focus();
+        if (choice.id === sortRef.current.id) return;
+        sortRef.current = choice;
+        setDirectorySort(choice);
+        try { window.localStorage.setItem(SORT_STORAGE, choice.id); } catch { /* storage may be disabled */ }
+        sortGeneration.current += 1;
+        const generation = sortGeneration.current;
+        const expanded = { ...stateRef.current.expanded };
+        const view = stateRef.current.view;
+        stateRef.current = { ...stateRef.current, levels: {}, views: {} };
+        setState(stateRef.current);
+        if (view !== 'tree') {
+          setState((current) => ({ ...current, views: { [view]: { entries: [], loading: true } } }));
+          const result = await settleRemoteCall(() => listViewForSort(view, undefined, signal), signal);
+          if (generation !== sortGeneration.current) return;
+          if (result !== undefined) setState((current) => applyViewResult(current, view, result));
+        }
+        const keys = [ROOT_LEVEL, ...Object.keys(expanded).filter((key) => expanded[key] && key !== ROOT_LEVEL)];
+        await Promise.all(keys.map(async (key) => {
+          const [driveId, fileId] = key.split('/');
+          const parent = key === ROOT_LEVEL ? undefined : { driveId, fileId };
+          setState((current) => markLoading(current, key));
+          const result = await settleRemoteCall(() => listDirectory(parent, undefined, signal), signal);
+          if (result === undefined || generation !== sortGeneration.current) return;
+          setState((current) => applyListResult(current, key, result, true));
+        }));
+      };
+      useEffect(() => {
+        if (!sortMenu) return undefined;
+        sortMenuRef.current?.querySelector('[aria-checked="true"]')?.focus();
+        const dismiss = (event) => {
+          if (!event.target?.closest?.('[data-kdocs-sort-control]') && !event.target?.closest?.('[data-kdocs-sort-menu]')) setSortMenu(undefined);
+        };
+        const escape = (event) => {
+          if (event.key === 'Escape') { setSortMenu(undefined); sortButtonRef.current?.focus(); }
+        };
+        document.addEventListener('pointerdown', dismiss, true);
+        document.addEventListener('keydown', escape, true);
+        return () => { document.removeEventListener('pointerdown', dismiss, true); document.removeEventListener('keydown', escape, true); };
+      }, [sortMenu]);
+
       /** Fetch one level's first page. */
       /**
        * Fetch the root listing.
@@ -2518,7 +2679,7 @@ function sessionFileAddress(sessionId, path) {
       const loadRoot = useCallback(async (force) => {
         if (force !== true && stateRef.current.levels[ROOT_LEVEL] !== undefined) return;
         setState((current) => markLoading(current, ROOT_LEVEL));
-        const result = await settleRemoteCall(() => face().list(undefined, undefined, signal), signal);
+        const result = await settleRemoteCall(() => listDirectory(undefined, undefined, signal), signal);
         // Abandoned because the tab closed: the pane is gone, so is the spinner.
         if (result === undefined) return;
         if (unwrapResult(result).ok === false) lastErrorRef.current = 'list(root)';
@@ -2535,7 +2696,7 @@ function sessionFileAddress(sessionId, path) {
         async (key, parent) => {
           const level = stateRef.current.levels[key];
           if (level === undefined || level.cursor === undefined) return;
-          const result = await settleRemoteCall(() => face().list(parent, level.cursor, signal), signal);
+          const result = await settleRemoteCall(() => listDirectory(parent, level.cursor, signal), signal);
           if (result === undefined) return;
           if (unwrapResult(result).ok === false) lastErrorRef.current = 'list(more)';
           setState((current) => applyListResult(current, key, result));
@@ -2549,7 +2710,7 @@ function sessionFileAddress(sessionId, path) {
           setState(outcome.state);
           if (!outcome.shouldLoad) return;
           setState((current) => markLoading(current, key));
-          const result = await settleRemoteCall(() => face().list(entry.ref, undefined, signal), signal);
+          const result = await settleRemoteCall(() => listDirectory(entry.ref, undefined, signal), signal);
           if (result === undefined) return;
           if (unwrapResult(result).ok === false) lastErrorRef.current = 'list(folder)';
           setState((current) => applyListResult(current, key, result));
@@ -2560,7 +2721,10 @@ function sessionFileAddress(sessionId, path) {
       const previewSequence = useRef(0);
       const onOpen = useCallback(
         async (entry, refresh = false) => {
-          if (!IS_DESKTOP_SHELL || !/\.(pdf|docx?|pptx?)$/i.test(entry.name)) {
+          if (IS_DESKTOP_SHELL && fileKindOf(entry.name) === 'image' && !nativePreviewName(entry.name)) {
+            setDetail({ title: entry.name, note: t('unsupportedImage') }); return;
+          }
+          if (!IS_DESKTOP_SHELL || !nativePreviewName(entry.name)) {
             tabActions.openResource(props.addressOf(entry.ref)); return;
           }
           const sequence = ++previewSequence.current;
@@ -2657,7 +2821,7 @@ function sessionFileAddress(sessionId, path) {
             view,
             search: { ...current.search, active: false, entries: [], cursor: undefined, error: undefined },
           }));
-          if (view === 'tree') return;
+          if (view === 'tree') { if (!stateRef.current.levels[ROOT_LEVEL]) void loadRoot(); return; }
           if (stateRef.current.views[view] !== undefined) return;
           setState((current) => ({
             ...current,
@@ -2666,7 +2830,7 @@ function sessionFileAddress(sessionId, path) {
               [view]: { entries: [], cursor: undefined, loading: true, error: undefined },
             },
           }));
-          const result = await settleRemoteCall(() => face().listView(view, undefined, signal), signal);
+          const result = await settleRemoteCall(() => listViewForSort(view, undefined, signal), signal);
           if (result === undefined) return;
           if (unwrapResult(result).ok === false) lastErrorRef.current = `listView(${view})`;
           setState((current) => applyViewResult(current, view, result));
@@ -2684,7 +2848,7 @@ function sessionFileAddress(sessionId, path) {
             ...state,
             views: { ...state.views, [view]: { ...current, loading: true } },
           }));
-          const result = await settleRemoteCall(() => face().listView(view, current.cursor, signal), signal);
+          const result = await settleRemoteCall(() => listViewForSort(view, current.cursor, signal), signal);
           if (result === undefined) return;
           setState((state) => applyViewResult(state, view, result, true));
         },
@@ -2700,10 +2864,11 @@ function sessionFileAddress(sessionId, path) {
       const canQuote = typeof props.inputActions?.setDraft === 'function';
 
       /** One entry's marker, built the same way the preview tab builds it. */
-      const markerFor = (entry) => kdocsQuoteMarker(entry.name, props.addressOf(entry.ref));
+      const markerFor = (entry) => kdocsQuoteMarker(entry.name, props.addressOf(entry.ref), undefined, entry.kind);
 
       /** Write a marker into the composer, keeping whatever is already typed. */
       const writeMarker = (marker) => {
+        if (props.insertReference?.(marker) === true) return;
         const typed = typeof draftNow === 'string' ? draftNow.trim() : '';
         props.inputActions.setDraft(typed === '' ? marker : `${typed}\n\n${marker}`);
       };
@@ -2713,7 +2878,7 @@ function sessionFileAddress(sessionId, path) {
         async (key) => {
           const [driveId, fileId] = key === ROOT_LEVEL ? [] : key.split('/');
           const ref = driveId === undefined || fileId === undefined ? undefined : { driveId, fileId };
-          const result = await settleRemoteCall(() => face().list(ref, undefined, signal), signal);
+          const result = await settleRemoteCall(() => listDirectory(ref, undefined, signal), signal);
           if (result === undefined) return;
           setState((current) => applyListResult(current, key, result, true));
         },
@@ -2920,7 +3085,7 @@ function sessionFileAddress(sessionId, path) {
           const [driveId, fileId] = key.split('/');
           if (!driveId || !fileId) continue;
           setState((current) => markLoading(current, key));
-          void settleRemoteCall(() => face().list({ driveId, fileId }, undefined, signal), signal)
+          void settleRemoteCall(() => listDirectory({ driveId, fileId }, undefined, signal), signal)
             .then((result) => {
               if (result === undefined) return;
               // `replace`, for the same reason `loadRoot` needs it: this fills a
@@ -3241,7 +3406,7 @@ function sessionFileAddress(sessionId, path) {
             key: 'homeRow',
             style: { display: 'flex', alignItems: 'center', gap: SPACE.sm, flex: 'none', padding: `${SPACE.md} ${SPACE.md} 0` },
             children: [
-              jsx('span', { key: 'label', style: { flex: '1 1 auto', fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' }, children: t('rootLabel') }),
+              jsx('h1', { key: 'label', style: { flex: '1 1 auto', margin: 0, fontSize: '20px', lineHeight: '28px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }, children: t('rootLabel') }),
               jsx('a', {
                 key: 'home',
                 'data-kdocs-home': 'true',
@@ -3260,7 +3425,7 @@ function sessionFileAddress(sessionId, path) {
           // one more file row on screen.
           jsxs('div', {
             key: 'searchRow',
-            style: { flex: 'none', display: 'flex', alignItems: 'center', gap: SPACE.sm, padding: `${SPACE.sm} ${SPACE.md} 0` },
+            style: { flex: 'none', display: 'flex', alignItems: 'center', gap: SPACE.sm, padding: `${SPACE.xl} ${SPACE.md} 0` },
             children: [
               jsx('input', {
                 key: 'field',
@@ -3308,7 +3473,11 @@ function sessionFileAddress(sessionId, path) {
           // and dropping the per-tab border, and every view keeps its own entry
           // (a `···` overflow menu was considered and rejected: hiding 回收站 behind
           // another click to save a line is the wrong trade in a workspace).
-          jsx('div', {
+          jsxs('div', {
+            key: 'navigation',
+            style: { display: 'flex', alignItems: 'center', gap: '8px', padding: `0 ${SPACE.md}`, flex: 'none', minWidth: 0 },
+            children: [
+jsx('div', {
             key: 'viewTabs',
             'data-kdocs-view-tabs': 'true',
             role: 'tablist',
@@ -3327,11 +3496,12 @@ function sessionFileAddress(sessionId, path) {
               display: 'flex',
               flexWrap: 'nowrap',
               gap: SPACE.lg,
-              flex: 'none',
+              flex: '1 1 auto',
+              minWidth: 0,
               overflowX: 'auto',
               scrollbarWidth: 'none',
               msOverflowStyle: 'none',
-              padding: `${SPACE.md} ${SPACE.md} 0 ${SPACE.md}`,
+              padding: `${SPACE.xl} 0`,
             },
             children: VIEW_TABS.map(([id, label]) => jsx('button', {
               key: id,
@@ -3347,6 +3517,41 @@ function sessionFileAddress(sessionId, path) {
               children: label,
             })),
           }),
+              jsx('button', {
+                ref: sortButtonRef, type: 'button', 'data-kdocs-sort-control': true,
+                title: sortSupported(directorySort) ? `${t('sort')}：${t('sort.' + directorySort.id)}` : t('sort'), 'aria-label': sortSupported(directorySort) ? `${t('sort')}：${t('sort.' + directorySort.id)}` : t('sort'),
+                'aria-haspopup': 'menu', 'aria-expanded': Boolean(sortMenu),
+                style: { ...HEADER_ACTION_STYLE, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', padding: 0, border: 0, borderRadius: '12px' },
+                onClick: (event) => {
+                  if (sortMenu) { setSortMenu(undefined); return; }
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setSortMenu({ left: Math.max(8, Math.min(rect.right - 180, window.innerWidth - 188)), top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - 152)) });
+                },
+                children: jsx('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': true,
+                  children: jsx('path', { d: 'M4 6h12M4 12h8M4 18h4M18 10v10m-3-3 3 3 3-3', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }) }),
+              }),
+            ],
+          }),
+          sortMenu ? jsx('div', {
+            ref: sortMenuRef, 'data-kdocs-sort-menu': true, role: 'menu', 'aria-label': t('sort'),
+            style: { ...MENU_STYLE, left: `${sortMenu.left}px`, top: `${sortMenu.top}px`, width: '180px', boxSizing: 'border-box', borderRadius: '12px', background: 'var(--dsw-alias-bg-layer-2)' },
+            onKeyDown: (event) => {
+              const items = Array.from(event.currentTarget.querySelectorAll('button'));
+              const index = items.indexOf(document.activeElement);
+              if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+                event.preventDefault();
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+                items[next]?.focus();
+              }
+            },
+            children: [...SORT_CHOICES.map((choice) => jsxs('button', {
+              key: choice.id, type: 'button', role: 'menuitemradio', 'aria-checked': sortSupported(choice) && choice.id === directorySort.id, disabled: !sortSupported(choice),
+              'data-kdocs-sort-choice': choice.id, 'data-kdocs-menu-item': 'sort',
+              onClick: () => void chooseSort(choice),
+              style: { ...MENU_ITEM_STYLE, height: '32px', borderRadius: '12px', gap: '8px', opacity: sortSupported(choice) ? 1 : 0.4, background: sortSupported(choice) && choice.id === directorySort.id ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent' },
+              children: [jsx('span', { 'aria-hidden': true, style: { width: '16px' }, children: sortSupported(choice) && choice.id === directorySort.id ? '✓' : '' }), t('sort.' + choice.id)],
+            }))],
+          }) : null,
           // The menu, the detail sheet and the rename draft all float above the
           // list. `position: fixed` puts them outside the scroll container, so a
           // long tree cannot clip them.
@@ -3368,7 +3573,7 @@ function sessionFileAddress(sessionId, path) {
               children: [
                 jsx('div', { key: 'head', style: MENU_HEAD_STYLE, children: menu.entry.name }),
                 menu.entry.kind === 'file' ? jsx('button', { key: 'textRead', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'textRead', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.textRead), style: MENU_ITEM_STYLE, children: t('menuTextRead') }) : null,
-                IS_DESKTOP_SHELL && /\.(pdf|docx?|pptx?)$/i.test(menu.entry.name) ? jsx('button', { key: 'refreshPreview', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'refreshPreview', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.refreshPreview), style: MENU_ITEM_STYLE, children: t('menuRefreshPreview') }) : null,
+                IS_DESKTOP_SHELL && nativePreviewName(menu.entry.name) ? jsx('button', { key: 'refreshPreview', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'refreshPreview', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.refreshPreview), style: MENU_ITEM_STYLE, children: t('menuRefreshPreview') }) : null,
                 jsx('button', { key: 'quote', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'quote', disabled: !canQuote || menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.quote), style: { ...MENU_ITEM_STYLE, opacity: canQuote ? 1 : 0.45 }, children: t('menuQuote') }),
                 jsx('button', { key: 'open', type: 'button', role: 'menuitem', 'data-kdocs-menu-item': 'open', disabled: menuBusy, onClick: () => void runMenuAction(menu.entry, menuActions.openOnline), style: MENU_ITEM_STYLE, children: t('menuOpen') }),
                 jsx('div', { key: 'sep-1', role: 'separator', style: MENU_SEPARATOR_STYLE }),
@@ -3895,6 +4100,8 @@ function sessionFileAddress(sessionId, path) {
           '[data-kdocs-row-menu]:hover{color:var(--dsw-alias-label-primary)}',
           '[data-kdocs-row-menu]:focus-visible{outline:1.5px solid var(--dsw-alias-label-primary);outline-offset:-1.5px}',
           '[data-kdocs-row]:focus-visible{outline:1.5px solid var(--dsw-alias-label-primary);outline-offset:-1.5px}',
+          '[data-kdocs-sort-control]:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+          '[data-kdocs-sort-control]:focus-visible{outline:1.5px solid var(--dsw-alias-label-primary);outline-offset:-1.5px}',
           '[data-kdocs-mode]:hover{background:var(--dsw-alias-interactive-bg-hover)}',
           '[data-kdocs-scope]:hover,[data-kdocs-view]:hover{color:var(--dsw-alias-label-primary)}',
           '[data-kdocs-search]::placeholder{color:var(--dsw-alias-label-tertiary)}',
@@ -3902,6 +4109,22 @@ function sessionFileAddress(sessionId, path) {
         document.head.appendChild(style);
         return () => style.remove();
       }, 'kdocs: panel stylesheet');
+
+      ctx.inject(['inputTriggers'], (scoped) => {
+        scoped.effect(() => scoped.inputTriggers.registerSource({
+          trigger: '@', name: KDOCS_REFERENCE_SOURCE, order: 610,
+          showGroupTitle: false, candidates: () => Promise.resolve([]), onPick: () => undefined,
+          codec: { clipboardText: (ref) => ref, serialize: (ref) => Promise.resolve(ref) },
+        }), 'kdocs: reference codec');
+      });
+      ctx.inject(['uiConversation'], (scoped) => {
+        scoped.effect(() => scoped.uiConversation.userText.register({
+          id: KDOCS_REFERENCE_SOURCE, order: 21, match: matchKDocsReference,
+        }), 'kdocs: reference text rule');
+      });
+      ctx.slots.inject('conversation.user.text.node', () => ctx.slots.register({
+        name: 'conversation.user.text.node', key: KDOCS_REFERENCE_SOURCE,
+      }, guarded(KDocsReferenceNode)));
 
       ctx.inject(['remote.kdocs', 'remote.workspaceFiles'], (scoped) => {
         // The resource protocol: metadata for `dsh-resource://kdocs/file/...`.
@@ -3920,7 +4143,7 @@ function sessionFileAddress(sessionId, path) {
           locale: KDOCS_NS,
           // The seat spreads this factory's return value into the body's props.
           inject: (sessionId) => ({
-            sessionId, workspaceFiles: scoped.remote.workspaceFiles,
+            sessionId, insertReference: (marker) => insertKDocsReference(ctx, sessionId, marker), workspaceFiles: scoped.remote.workspaceFiles,
             remote: scoped.remote.kdocs,
             addressOf: kdocsAddressOf,
           }),
@@ -3949,7 +4172,7 @@ function sessionFileAddress(sessionId, path) {
           name: 'sidebar.right.pane.tab',
           key: PREVIEW_ID,
           locale: KDOCS_NS,
-          inject: (sessionId) => ({ sessionId, workspaceFiles: scoped.remote.workspaceFiles, remote: scoped.remote.kdocs }),
+          inject: (sessionId) => ({ sessionId, insertReference: (marker) => insertKDocsReference(ctx, sessionId, marker), workspaceFiles: scoped.remote.workspaceFiles, remote: scoped.remote.kdocs }),
         }, guarded(KDocsPreview))), 'kdocs: kdocs-preview tab body');
 
         // M8: the four tools get their own card.
@@ -3968,6 +4191,8 @@ function sessionFileAddress(sessionId, path) {
       });
     };
 
+    exports.SORT_CHOICES = SORT_CHOICES;
+    exports.readDirectorySort = readDirectorySort;
     exports.KDocsConfigPage = KDocsConfigPage;
     exports.cliPathOps = cliPathOps;
     exports.TYPERT_REMOTE = TYPERT_REMOTE;
@@ -3976,6 +4201,9 @@ function sessionFileAddress(sessionId, path) {
     exports.kdocsAddressOf = kdocsAddressOf;
     exports.safeHref = safeHref;
     exports.inlineSpans = inlineSpans;
+    exports.insertKDocsReference = insertKDocsReference;
+    exports.matchKDocsReference = matchKDocsReference;
+    exports.KDocsReferenceNode = KDocsReferenceNode;
     exports.kdocsQuoteMarker = kdocsQuoteMarker;
     exports.toolResultText = toolResultText;
     exports.toolResultAddress = toolResultAddress;

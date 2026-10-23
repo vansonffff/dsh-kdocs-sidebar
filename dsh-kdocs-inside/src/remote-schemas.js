@@ -49,7 +49,7 @@
  * `content`, `status`, `loginEvent`, `failure`, `freeObject`) let the Host
  * validate a whole nested result rather than only its top level.
  *
- * @typedef {'string' | 'number' | 'boolean' | 'stringArray' | 'freeObject'
+ * @typedef {'string' | 'number' | 'boolean' | 'stringArray' | 'freeObject' | 'sortOptions'
  *   | 'fileRef' | 'entry' | 'entryArray' | 'page' | 'search' | 'content'
  *   | 'status' | 'loginEvent' | 'failure' | 'previewFile'} KDocsFieldKind
  */
@@ -219,7 +219,10 @@ export function fieldSchema(field, z) {
       });
       break;
     case 'previewFile':
-      schema = z.object({ kind: z.literal('pdf-file'), absolutePath: z.string(), name: z.string(), size: z.number().nonnegative(), source: z.enum(['download', 'export']), cached: z.boolean() }).strict();
+      schema = z.object({ kind: z.enum(['pdf-file', 'image-file']), absolutePath: z.string(), name: z.string(), size: z.number().nonnegative(), source: z.enum(['download', 'export']), cached: z.boolean() }).strict();
+      break;
+    case 'sortOptions':
+      schema = z.object({ orderBy: z.enum(['fname', 'mtime']), order: z.enum(['asc', 'desc']) }).strict();
       break;
     case 'freeObject':
       schema = z.record(z.string(), z.unknown());
