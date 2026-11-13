@@ -786,6 +786,34 @@ function sessionFileAddress(sessionId, path) {
     }
 
     /**
+     * Delegate online navigation to the official Browser Tab. It owns the current
+     * Session's workspace partition; this plugin never reads or copies credentials.
+     * Old Desktop hosts and Web keep their existing external-link behavior.
+     */
+    function openInSidebarBrowser(actions, href) {
+      const carrier = typeof window === 'object' ? window.dshDesktop : undefined;
+      if (!IS_DESKTOP_SHELL || carrier?.protocolVersion !== 1
+        || typeof carrier.browser?.acquire !== 'function' || typeof actions?.openTab !== 'function') return false;
+      try {
+        const url = new URL(href);
+        if (url.protocol !== 'https:' || url.username || url.password
+          || !(url.hostname === 'kdocs.cn' || url.hostname.endsWith('.kdocs.cn'))) return false;
+        actions.openTab('browser', { params: { url: url.href }, revealIfOpened: false });
+        return true;
+      } catch {
+        // Preserve the ordinary anchor / existing link fallback if unavailable.
+        return false;
+      }
+    }
+
+    /** Keep modified clicks and native anchor navigation intact outside Desktop. */
+    function onOnlineLinkClick(event, actions, href) {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey
+        || event.shiftKey || event.altKey) return;
+      if (openInSidebarBrowser(actions, href)) event.preventDefault();
+    }
+
+    /**
      * The document name an address carries, when it decodes.
      *
      * The address holds ids, not a name, so this is only a last-resort chip label;
@@ -803,17 +831,17 @@ function sessionFileAddress(sessionId, path) {
       return /\.(pdf|docx?|pptx?|png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(name);
     }
 
-    /** 从当前 Tab 的 Session 注入构造官方资源；读取失败留在原页面。 */
-    async function openOfficialPreview(props, ref, tab, refresh = false) {
+    /** 从当前视图所属的 Session 注入构造官方资源；读取失败留在原页面。 */
+    async function openOfficialPreview(props, ref, view, refresh = false) {
       if (!props.sessionId) throw new Error('无法取得当前标签页的 Session 身份。');
-      const result = unwrapResult(await props.remote.preparePreview(ref, { refresh }, tab.signal));
+      const result = unwrapResult(await props.remote.preparePreview(ref, { refresh }, view.signal));
       if (!result.ok) throw new Error(result.error?.message ?? '文档转换失败，无法生成预览。');
       const file = result.value;
       if (!['pdf-file', 'image-file'].includes(file?.kind) || typeof file.absolutePath !== 'string') throw new Error('预览文件响应无效。');
-      const stat = unwrapResult(await props.workspaceFiles.stat(props.sessionId, file.absolutePath, tab.signal));
+      const stat = unwrapResult(await props.workspaceFiles.stat(props.sessionId, file.absolutePath, view.signal));
       if (!stat.ok) throw new Error('DSH 无法读取预览缓存，请检查本地文件访问权限。');
-      tab.signal.throwIfAborted();
-      tab.actions.openResource(sessionFileAddress(props.sessionId, file.absolutePath));
+      view.signal.throwIfAborted();
+      view.actions.openResource(sessionFileAddress(props.sessionId, file.absolutePath));
       return file;
     }
 
@@ -823,10 +851,27 @@ function sessionFileAddress(sessionId, path) {
       return jsxs('div', { style: { padding: '12px' }, children: [
         jsx('button', { children: props.t('officialPreview'), onClick: async () => {
           setMessage(props.t('preparingPreview'));
-          try { await openOfficialPreview(props, props.fileRef, props.tab, props.nonce > 0); setMessage(''); }
-          catch (error) { if (!props.tab.signal.aborted) setMessage(error.message); }
+          try { await openOfficialPreview(props, props.fileRef, props.view, props.nonce > 0); setMessage(''); }
+          catch (error) { if (!props.view.signal.aborted) setMessage(error.message); }
         }}), jsx('p', { role: 'status', children: message }),
       ]});
+    }
+
+    /**
+     * 面板渲染所依据的导航视图。
+     *
+     * 右栏的标签页席位持有真实的 `tab`；主工作区的工厂没有标签页席位，直接注入
+     * 一个 `view`。两者暴露的恰好是面板真正消费的三项——地址、取消信号、导航动作，
+     * 因此两个组件不必长出第二条代码路径。`view` 由注册方提供且每个挂载期固定，
+     * 这里的条件调用不会在同一个实例上前后切换。
+     *
+     * @param {any} props - 席位或工厂给出的属性。
+     * @returns {{address?: string, signal: AbortSignal, actions: any}} 导航视图。
+     */
+    function panelViewOf(props) {
+      if (props.view !== undefined) return props.view;
+      const { tab } = props.useTabInfo();
+      return { address: tab.contentId, signal: tab.signal, actions: tab.actions };
     }
 
     /**
@@ -842,9 +887,9 @@ function sessionFileAddress(sessionId, path) {
      * @returns {any} the rendered preview.
      */
     function KDocsPreview(props) {
-      const { t, useTabInfo, useResource } = props;
-      const { tab } = useTabInfo();
-      const address = tab.contentId;
+      const { t, useResource } = props;
+      const view = panelViewOf(props);
+      const address = view.address;
       // Every derived value is declared once, in dependency order, before any
       // reader. Two rounds of this were broken by inserting a reader above its
       // source: first `openHref` read `ref`, then `embedding` read `mode`. Each
@@ -880,7 +925,7 @@ function sessionFileAddress(sessionId, path) {
       const [doc, setDoc] = useState({ loading: true, content: undefined, format: undefined, truncated: false, error: undefined });
       /** The text currently selected in the reader, and where to float its button. */
       const [selection, setSelection] = useState(undefined);
-      const signal = tab.signal;
+      const signal = view.signal;
 
       useEffect(() => {
         const ref = parseKDocsAddress(address);
@@ -938,14 +983,15 @@ function sessionFileAddress(sessionId, path) {
       const draft = typeof props.useInput === 'function'
         ? props.useInput((input) => (input !== null && typeof input === 'object' && typeof input.draft === 'string' ? input.draft : ''))
         : '';
-      const canQuote = typeof props.inputActions?.setDraft === 'function';
+      const canQuote = typeof props.insertReference === 'function'
+        || typeof props.inputActions?.setDraft === 'function';
       /** Write one marker into the composer, keeping whatever is already typed. */
       const writeMarker = (marker) => {
         if (props.insertReference?.(marker) === true) return;
         const current = typeof draft === 'string' ? draft.trim() : '';
         // Appending keeps what the user already typed: quoting twice must not
         // silently drop the first document.
-        props.inputActions.setDraft(current === '' ? marker : `${current}\n\n${marker}`);
+        props.inputActions?.setDraft?.(current === '' ? marker : `${current}\n\n${marker}`);
       };
       const quote = () => writeMarker(kdocsQuoteMarker(name, address));
 
@@ -1069,6 +1115,7 @@ function sessionFileAddress(sessionId, path) {
             key: 'open',
             'data-kdocs-open': 'true',
             href: openHref,
+            onClick: (event) => onOnlineLinkClick(event, view.actions, openHref),
             target: '_blank',
             rel: 'noreferrer',
             style: HEADER_ACTION_STYLE,
@@ -1170,12 +1217,12 @@ function sessionFileAddress(sessionId, path) {
               onMouseUp: onReaderMouseUp,
               style: { flex: '1 1 auto', minHeight: '0', display: 'flex', flexDirection: 'column' },
               children: jsx(KDocsOfficialPreview, {
-                ...props, tab,
+                ...props, view,
                 fileRef: ref,
                 remote: props.remote,
                 t,
                 nonce,
-                signal: tab.signal,
+                signal: view.signal,
               }),
             })
             : scrollArea),
@@ -1225,6 +1272,15 @@ function sessionFileAddress(sessionId, path) {
     const KDOCS_KIND = 'kdocs-files';
     /** This implementation's identity in the tab system, and the body's seat key. */
     const KDOCS_ID = 'kdocs';
+
+    /**
+     * 主工作区的工厂名，跨插件契约。
+     *
+     * 消费方只写 `renderFactorySlot('kdocs.workspace', {})`；名称是全局键，改它
+     * 等于改契约。消费方需要自带 fallback：本插件未安装或被卸载时 FactoryOutlet
+     * 渲染 fallback，不会报错。
+     */
+    const KDOCS_WORKSPACE_FACTORY = 'kdocs.workspace';
 
     /**
      * The sign-in page's kind, and the body seat key it registers under.
@@ -1324,6 +1380,8 @@ function sessionFileAddress(sessionId, path) {
       rechecking: '检查中…',
       toolFailed: '调用失败',
       quoteHint: '把这个文档的地址写进输入框，然后直接说要做什么（例如「帮我总结」）',
+      workspaceBack: '返回列表',
+      workspaceQuoteUnavailable: '当前对话不可写入，未插入引用；请先进入一个对话再引用。',
     };
     const KDOCS_EN = {
       guideTitle: 'KDocs',
@@ -1405,6 +1463,8 @@ function sessionFileAddress(sessionId, path) {
       rechecking: 'Checking…',
       toolFailed: 'Call failed',
       quoteHint: 'Write this document\'s address into the composer, then say what to do with it',
+      workspaceBack: 'Back to list',
+      workspaceQuoteUnavailable: 'The current conversation cannot take the reference, so nothing was inserted.',
     };
 
     /**
@@ -1451,13 +1511,19 @@ function sessionFileAddress(sessionId, path) {
      */
     const panelMemory = { expanded: {}, query: '' };
 
-    /** Fresh panel state, positioned where the last mount left off. */
-    function restoredPanelState() {
+    /**
+     * Fresh panel state, positioned where the last mount left off.
+     *
+     * @param {{ expanded: Record<string, boolean>, query: string }} [memory] - the
+     *   surface's own place. The right sidebar uses the module-level one; the main
+     *   workspace passes its own, so the two surfaces never move each other.
+     */
+    function restoredPanelState(memory = panelMemory) {
       const state = initialPanelState();
       // Copied, not aliased: the live state mutates by replacement, and an alias
       // would make the memory change before the render that saved it.
-      state.expanded = { ...panelMemory.expanded };
-      state.query = panelMemory.query;
+      state.expanded = { ...memory.expanded };
+      state.query = memory.query;
       return state;
     }
 
@@ -1938,6 +2004,169 @@ function sessionFileAddress(sessionId, path) {
         focusable: 'false',
         children: jsx('path', { d: KDOCS_GLYPH_PATH }),
       });
+    }
+
+    // ── 主工作区用的浏览/预览工厂（跨插件契约 `kdocs.workspace`） ─────────────
+    //
+    // 任何插件都可以 `props.renderFactorySlot('kdocs.workspace', {})` 拿到这一份
+    // 浏览面板，**不需要**注入本插件的 `remote.kdocs`、locale 或任何服务：正文、
+    // 文案、workspaceFiles、活跃会话订阅和错误边界都由本工厂自己提供。
+    //
+    // 浏览与预览都留在消费方给出的位置——这里的 preview 是组件内路由，不调用
+    // 右栏的 `openResource`。在线编辑仍交给官方 Browser Tab（与右栏同一入口）；
+    // 非 kdocs 地址（例如官方文件预览的 session 资源）交回右栏，不在这里长出
+    // 第二套渲染器。
+    //
+    // 引用取**点击时**的活跃会话，不取挂载时的会话：切换会话后不会把标记写进
+    // 旧对话。
+
+    /**
+     * Build the factory component for a host surface.
+     *
+     * @param {object} deps - dependencies this plugin owns; the consumer supplies none.
+     * @param {(key: string) => string} deps.t - copy for this plugin's namespace.
+     * @param {any} deps.remote - the `remote.kdocs` face.
+     * @param {any} deps.workspaceFiles - `remote.workspaceFiles` (official preview cache).
+     * @param {{ get: () => string | undefined, subscribe: (fn: () => void) => (() => void) | undefined }} deps.sessionSource - live active Session.
+     * @param {(marker: string, sessionId: string) => boolean} deps.insertReference - writes one marker into that Session's composer.
+     * @param {(address: string) => void} [deps.openResource] - delegates a non-kdocs address to the right sidebar.
+     * @param {(kind: string, options: any) => any} [deps.openTab] - official online open.
+     * @returns {any} the component a consumer renders through `renderFactorySlot`.
+     */
+    function createKDocsWorkspace({ t, remote, workspaceFiles, sessionSource, insertReference, openResource, openTab }) {
+      // 这一份位置记忆只属于主工作区：右栏那次挂载仍用模块级 panelMemory。
+      const memory = { expanded: {}, query: '' };
+
+      return function KDocsWorkspaceView() {
+        const [route, setRoute] = useState({ view: 'browse', address: undefined });
+        const [notice, setNotice] = useState('');
+        // 只为在活跃会话变化时重渲染（引用按钮/预览的 sessionId 要跟着走）。
+        const [, setSessionRevision] = useState(0);
+        const browse = useRef(undefined);
+        // 被取消过就换一个新的：React 严格模式会「挂载→清理→再挂载」，复用同一个
+        // 已 abort 的控制器会让整个面板从此读不动。
+        if (browse.current === undefined || browse.current.signal.aborted) browse.current = new AbortController();
+        const previewRef = useRef({ address: undefined, controller: undefined });
+
+        useEffect(() => {
+          const unsubscribe = sessionSource.subscribe(() => setSessionRevision((value) => value + 1));
+          return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
+        }, []);
+        // 卸载等于离开：取消仍在进行的浏览与预览读取。
+        useEffect(() => () => {
+          browse.current?.abort?.();
+          previewRef.current.controller?.abort();
+        }, []);
+
+        const stalePreview = route.view === 'preview'
+          && (previewRef.current.address !== route.address
+            || previewRef.current.controller === undefined
+            || previewRef.current.controller.signal.aborted);
+        if (stalePreview) {
+          // 换文档（或上一次已被取消）：上一条读取必须停，不能让它落到新页面。
+          if (previewRef.current.controller !== undefined) previewRef.current.controller.abort();
+          previewRef.current = { address: route.address, controller: new AbortController() };
+        }
+
+        const leavePreview = () => {
+          // 回到列表就是关闭这次预览：取消它的读取。
+          if (previewRef.current.controller !== undefined) previewRef.current.controller.abort();
+          previewRef.current = { address: undefined, controller: undefined };
+          setNotice('');
+          setRoute({ view: 'browse', address: undefined });
+        };
+
+        /**
+         * Quote one marker into the conversation that is active **now**.
+         *
+         * A surface without a composer cannot silently drop the click: it says so
+         * in the notice line and reports `false` to the panel's own fallback.
+         */
+        const quote = (marker) => {
+          const sessionId = sessionSource.get();
+          if (sessionId !== undefined && insertReference(marker, sessionId) === true) {
+            setNotice('');
+            return true;
+          }
+          setNotice(t('workspaceQuoteUnavailable'));
+          return false;
+        };
+
+        /** The navigation contract the panels consume. */
+        const actions = {
+          openResource(address) {
+            // 没有地址就没有可打开的东西：不要把 undefined 递给右栏的导航。
+            if (typeof address !== 'string' || address === '') return;
+            if (parseKDocsAddress(address) !== undefined) {
+              setRoute({ view: 'preview', address });
+              return;
+            }
+            // Session 资源（官方文件/图片预览）仍由右栏承接。
+            openResource?.(address);
+          },
+          ...(typeof openTab === 'function' ? { openTab } : {}),
+        };
+
+        const noticeLine = notice === ''
+          ? null
+          : jsx('p', {
+            role: 'status',
+            'data-kdocs-workspace-notice': 'true',
+            style: {
+              margin: 0, padding: `${SPACE.xs} ${SPACE.md}`, flex: '0 0 auto',
+              fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)',
+              background: 'var(--plugin-surface-subtle, var(--dsw-alias-bg-layer-1))',
+            },
+            children: notice,
+          });
+
+        if (route.view === 'preview') {
+          return jsxs('div', {
+            'data-kdocs-workspace': 'preview',
+            style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, boxSizing: 'border-box' },
+            children: [
+              jsx('div', {
+                'data-kdocs-workspace-bar': 'true',
+                style: {
+                  display: 'flex', alignItems: 'center', gap: SPACE.sm, flex: '0 0 auto',
+                  padding: `${SPACE.xs} ${SPACE.md}`, borderBottom: '1px solid var(--dsw-alias-border-l3)',
+                },
+                children: jsx('button', {
+                  type: 'button',
+                  'data-kdocs-workspace-back': 'true',
+                  style: HEADER_ACTION_STYLE,
+                  onClick: leavePreview,
+                  children: t('workspaceBack'),
+                }),
+              }),
+              noticeLine,
+              jsx('div', {
+                style: { flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column' },
+                children: jsx(KDocsPreview, {
+                  t, remote, workspaceFiles, addressOf: kdocsAddressOf, insertReference: quote,
+                  sessionId: sessionSource.get(),
+                  view: { address: route.address, signal: previewRef.current.controller.signal, actions },
+                }),
+              }),
+            ],
+          });
+        }
+
+        return jsxs('div', {
+          'data-kdocs-workspace': 'browse',
+          style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, boxSizing: 'border-box' },
+          children: [
+            noticeLine,
+            jsx(KDocsBody, {
+              t, remote, workspaceFiles, addressOf: kdocsAddressOf, insertReference: quote, memory,
+              // 桌面「原版」预览要用当前 Session 的身份；右栏席位本来就是会话级的，
+              // 这里由工厂现取，切换会话后跟着走。
+              sessionId: sessionSource.get(),
+              view: { signal: browse.current.signal, actions },
+            }),
+          ],
+        });
+      };
     }
 
     /**
@@ -2534,10 +2763,12 @@ function sessionFileAddress(sessionId, path) {
       // got 0`). An omitted optional parameter still crosses as an absent field,
       // because the descriptor accepts undefined for it.
       const face = () => props.remote;
-      const { tab } = props.useTabInfo();
-      const signal = tab.signal;
-      const tabActions = tab.actions;
-      const [state, setState] = useState(restoredPanelState);
+      const view = panelViewOf(props);
+      const signal = view.signal;
+      const tabActions = view.actions;
+      // 主工作区那次挂载用自己的位置记忆；右栏仍用历史上的模块级记忆，两者不互相覆盖。
+      const memory = props.memory ?? panelMemory;
+      const [state, setState] = useState(() => restoredPanelState(memory));
       const [directorySort, setDirectorySort] = useState(readDirectorySort);
       const sortRef = useRef(directorySort);
       const sortGeneration = useRef(0);
@@ -2731,14 +2962,14 @@ function sessionFileAddress(sessionId, path) {
           setDetail({ title: entry.name, note: t('preparingPreview') });
           try {
             // tab.actions 绑定当前组件的 Session，切换会话不会借用全局身份。
-            const file = await openOfficialPreview({ ...props, remote: face() }, entry.ref, tab, refresh);
+            const file = await openOfficialPreview({ ...props, remote: face() }, entry.ref, view, refresh);
             if (sequence === previewSequence.current) setDetail(undefined);
             return file;
           } catch (error) {
             if (!signal.aborted && sequence === previewSequence.current) setDetail({ title: entry.name, note: error.message });
           }
         },
-        [props, tabActions, tab, t],
+        [props, tabActions, view, t],
       );
 
       /**
@@ -2861,7 +3092,8 @@ function sessionFileAddress(sessionId, path) {
       // quote writes straight into the composer with no bridge and no round trip.
       // The connectors that keep their browser in a root-scoped settings page need
       // a null-rendering dock entry purely to reach this; here it is one call.
-      const canQuote = typeof props.inputActions?.setDraft === 'function';
+      const canQuote = typeof props.insertReference === 'function'
+        || typeof props.inputActions?.setDraft === 'function';
 
       /** One entry's marker, built the same way the preview tab builds it. */
       const markerFor = (entry) => kdocsQuoteMarker(entry.name, props.addressOf(entry.ref), undefined, entry.kind);
@@ -2870,7 +3102,7 @@ function sessionFileAddress(sessionId, path) {
       const writeMarker = (marker) => {
         if (props.insertReference?.(marker) === true) return;
         const typed = typeof draftNow === 'string' ? draftNow.trim() : '';
-        props.inputActions.setDraft(typed === '' ? marker : `${typed}\n\n${marker}`);
+        props.inputActions?.setDraft?.(typed === '' ? marker : `${typed}\n\n${marker}`);
       };
 
       /** Re-list one already-loaded level in place, after its contents changed. */
@@ -2937,6 +3169,8 @@ function sessionFileAddress(sessionId, path) {
             setDetail({ title: entry.name, note: settled?.error?.message ?? t('linkFailed') });
             return;
           }
+          if (signal.aborted) return;
+          if (openInSidebarBrowser(tabActions, link)) return;
           try {
             window.open(link, '_blank', 'noreferrer');
           } catch {
@@ -3101,8 +3335,8 @@ function sessionFileAddress(sessionId, path) {
 
       // Remember that place for the next mount.
       useEffect(() => {
-        panelMemory.expanded = state.expanded;
-        panelMemory.query = state.query;
+        memory.expanded = state.expanded;
+        memory.query = state.query;
       }, [state.expanded, state.query]);
 
       // How the context menu is dismissed.
@@ -3411,6 +3645,7 @@ function sessionFileAddress(sessionId, path) {
                 key: 'home',
                 'data-kdocs-home': 'true',
                 href: KDOCS_HOME_URL,
+                onClick: (event) => onOnlineLinkClick(event, tabActions, KDOCS_HOME_URL),
                 target: '_blank',
                 rel: 'noreferrer',
                 style: HEADER_ACTION_STYLE,
@@ -4135,6 +4370,40 @@ jsx('div', {
 
         const t = ctx.locale.bind(KDOCS_NS);
         ctx.effect(() => ctx.locale.register(KDOCS_NS, { zh: KDOCS_ZH, en: KDOCS_EN }), 'kdocs: sidebar copy');
+
+        // 主工作区（其他插件）通过 `renderFactorySlot('kdocs.workspace', {})` 复用这
+        // 一份浏览面板。工厂自己提供正文、copy、活跃会话订阅和错误边界；消费方
+        // 不注入本插件的任何服务，本插件缺失/卸载时由消费端的 fallback 承接。
+        //
+        // 旧宿主可能还没有 Factory API（`slots.registerFactory`）。缺它就**跳过**
+        // 这个可选入口：消费端拿到自己的 fallback，而右栏页签、预览、工具与资源
+        // 协议照常注册。不因为一个聚加入口提高 peer 依赖闸门。
+        if (typeof ctx.slots?.registerFactory === 'function') {
+          const workspaceView = createKDocsWorkspace({
+            t,
+            remote: scoped.remote.kdocs,
+            workspaceFiles: scoped.remote.workspaceFiles,
+            sessionSource: {
+              // 每次都现取：引用与预览的 sessionId 必须跟当前对话，不能沿用挂载时的。
+              get: () => ctx.get('uiWorkspace')?.selection?.getSnapshot?.().sessionId,
+              subscribe: (listener) => ctx.get('uiWorkspace')?.selection?.subscribe?.(listener),
+            },
+            insertReference: (marker, sessionId) => insertKDocsReference(ctx, sessionId, marker),
+            // 非 kdocs 资源（官方文件/图片预览）仍交右栏；无右栏时不假装能开。
+            openResource: (address) => ctx.get('sidebarRight')?.openResource?.(address),
+            // 在线编辑沿用右栏那次同一个官方 Browser Tab 入口；无导航时抛错，
+            // 调用方（openInSidebarBrowser）据此回退外部打开。
+            openTab: (kind, options) => {
+              const navigation = ctx.get('sidebarRight');
+              if (typeof navigation?.openTab !== 'function') throw new Error('当前宿主没有可用的右栏导航。');
+              return navigation.openTab(kind, options);
+            },
+          });
+          ctx.effect(
+            () => ctx.slots.registerFactory({ name: KDOCS_WORKSPACE_FACTORY, scope: 'root' }, guarded(workspaceView)),
+            'kdocs: main-workspace factory',
+          );
+        }
         ctx.effect(() => ctx.sidebarRightTabs.register(kdocsDefinition(t)), 'kdocs: kdocs-files tab type');
 
         ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
@@ -4231,6 +4500,10 @@ jsx('div', {
     // kept the whole suite green. The document view is the one a reader spends the
     // most time in, so "no test has ever executed it" is the gap worth closing.
     exports.KDocsPreview = KDocsPreview;
+    // The cross-plugin contract and the surface it renders, exported so a test can
+    // drive the factory without the Cordis context of a consumer.
+    exports.KDOCS_WORKSPACE_FACTORY = KDOCS_WORKSPACE_FACTORY;
+    exports.createKDocsWorkspace = createKDocsWorkspace;
     // The desktop PDF pane and the shell flag, exported so tests can drive both
     // directions: web stubs must never mount the pane, a dsh-app: stub must.
     exports.openOfficialPreview = openOfficialPreview;

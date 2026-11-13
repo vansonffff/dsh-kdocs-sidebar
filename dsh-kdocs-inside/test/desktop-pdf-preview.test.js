@@ -124,7 +124,7 @@ function loadBundle(protocol, hooks = {}) {
 
 /** A real document address, the shape the panel emits. */
 const REF = { driveId: 'drive', fileId: 'file' };
-const ADDRESS = 'dsh-resource://kdocs/file/100000001/publicDocumentFixture';
+const ADDRESS = 'dsh-resource://kdocs/file/fixture-drive/fixture-document';
 
 /**
  * Walk a rendered stub tree looking for one prop marker.

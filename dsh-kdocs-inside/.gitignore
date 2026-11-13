@@ -6,3 +6,7 @@ node_modules/
 *.log
 coverage/
 .tmp*/
+**/.credentials.yaml
+**/tokens.json
+**/*.pem
+.test-build/
